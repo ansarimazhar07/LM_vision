@@ -1,0 +1,45 @@
+{
+  "name": "@lm-vision/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LM-Vision Mobile App Shell (React Native / Expo - Phase 3)",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "expo start --go",
+    "start:dev": "expo start --dev-client",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "bundle:android": "expo export -p android",
+    "prebuild": "expo prebuild -p android --no-install",
+    "build:apk": "eas build -p android --profile preview"
+  },
+  "dependencies": {
+    "@lm-vision/config": "*",
+    "@lm-vision/perception": "*",
+    "@lm-vision/rules": "*",
+    "@lm-vision/shared-types": "*",
+    "@lm-vision/supabase-client": "*",
+    "@lm-vision/ui": "*",
+    "@lm-vision/validation": "*",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-navigation/bottom-tabs": "^7.3.10",
+    "@react-navigation/native": "^7.1.6",
+    "@react-navigation/native-stack": "^7.3.10",
+    "@supabase/supabase-js": "^2.45.0",
+    "expo": "^57.0.20",
+    "expo-camera": "~57.0.4",
+    "expo-image-picker": "~57.0.16",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "5.7.0",
+    "react-native-screens": "4.26.2",
+    "react-native-url-polyfill": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.4",
+    "typescript": "~6.0.3"
+  }
+}

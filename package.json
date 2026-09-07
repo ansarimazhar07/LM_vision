@@ -1,0 +1,38 @@
+{
+  "name": "lm-vision-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LM-Vision - SIH 2026 Problem Statement 26034 Monorepo",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "services/*"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start:mobile": "npm run start --workspace=@lm-vision/mobile",
+    "start:mobile:web": "npm run web --workspace=@lm-vision/mobile",
+    "start:mobile:android": "npm run android --workspace=@lm-vision/mobile",
+    "start:ai": "npm run dev --workspace=@lm-vision/ai-engine",
+    "lint": "echo \"Linting placeholder for Phase 1\""
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.1",
+    "zod": "^3.23.8"
+  },
+  "overrides": {
+    "react": "19.2.3",
+    "react-native-safe-area-context": "5.7.0",
+    "react-native-screens": "4.26.2"
+  },
+  "dependencies": {
+    "react": "19.2.3",
+    "react-native-safe-area-context": "5.7.0",
+    "react-native-screens": "4.26.2"
+  }
+}

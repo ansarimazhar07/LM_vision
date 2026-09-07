@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.expo/
+*.log
+.env.local
+android/.gradle/
+android/app/build/
+android/build/
+ios/Pods/
+*.apk
+*.aab
+*.ipa

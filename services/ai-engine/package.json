@@ -1,0 +1,39 @@
+{
+  "name": "@lm-vision/ai-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LM-Vision AI/CV Gateway Skeleton and Provider Interfaces",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js",
+      "default": "./dist/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/run-server.js",
+    "dev": "node dist/run-server.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.21.0",
+    "@lm-vision/config": "*",
+    "@lm-vision/rules": "*",
+    "@lm-vision/shared-types": "*",
+    "@lm-vision/validation": "*",
+    "pdfkit": "^0.15.0"
+  },
+  "devDependencies": {
+    "@types/pdfkit": "^0.13.4",
+    "typescript": "^5.5.4"
+  }
+}

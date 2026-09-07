@@ -1,0 +1,54 @@
+# ============================================================================
+# LM-Vision — Supabase Local Development Configuration
+# SIH 2026 Problem Statement 26034
+# ============================================================================
+# This file is used by the Supabase CLI for local development.
+# It is safe to commit. It does NOT contain secrets.
+# Replace placeholder values before initializing a live Supabase project.
+
+[project]
+# Project ID (replace with your actual Supabase project ref)
+id = "lm-vision-placeholder"
+
+[api]
+# Local API port (default: 54321)
+port = 54321
+# Supabase project URL (replace with live project URL)
+# Example: https://abcdefghijk.supabase.co
+schemas = ["public", "storage", "auth"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+# Local database port (default: 54322)
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[studio]
+# Local Supabase Studio (admin UI) port
+port = 54323
+
+[inbucket]
+# Local email testing service
+port = 54324
+smtp_port = 54325
+pop3_port = 54326
+
+[storage]
+# Default file size limit for storage objects (50MB)
+file_size_limit = "50MiB"
+
+[auth]
+# Auth site URL — used for OAuth redirects and email links
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/auth/callback"]
+
+# Disable email confirmation in local dev
+[auth.email]
+enable_confirmations = false
+
+[auth.sms]
+# SMS auth disabled for this project
+enable_phone_signup = false
+enable_phone_autoconfirm = false
