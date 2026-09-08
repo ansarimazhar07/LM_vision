@@ -9,7 +9,7 @@ services:
     runtime: node
     plan: free
     region: oregon
-    buildCommand: npm install && npm run build:backend
+    buildCommand: npm install --include=dev && npm run build:backend
     startCommand: npm run start:backend
     healthCheckPath: /api/v1/ai/health
     envVars:

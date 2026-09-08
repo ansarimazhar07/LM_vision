@@ -30,10 +30,10 @@
     "@lm-vision/rules": "*",
     "@lm-vision/shared-types": "*",
     "@lm-vision/validation": "*",
+    "@types/pdfkit": "^0.13.4",
     "pdfkit": "^0.15.0"
   },
   "devDependencies": {
-    "@types/pdfkit": "^0.13.4",
     "typescript": "^5.5.4"
   }
 }

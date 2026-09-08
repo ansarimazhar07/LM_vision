@@ -9,6 +9,8 @@
 import PDFDocument from 'pdfkit';
 import type { InspectionReport } from '@lm-vision/shared-types';
 
+type PDFDoc = InstanceType<typeof PDFDocument>;
+
 const PAGE = { left: 40, right: 555, width: 515, bottom: 748, footerY: 770 };
 const COLORS = {
   ink: '#172033',
@@ -56,16 +58,16 @@ function resultLabel(result: string): string {
   return result.replaceAll('_', ' ');
 }
 
-function textHeight(doc: PDFKit.PDFDocument, value: string, width: number, fontSize: number, font = 'Helvetica'): number {
+function textHeight(doc: PDFDoc, value: string, width: number, fontSize: number, font = 'Helvetica'): number {
   doc.font(font).fontSize(fontSize);
   return doc.heightOfString(value || ' ', { width, lineGap: 1 });
 }
 
-function ensureSpace(doc: PDFKit.PDFDocument, height: number): void {
+function ensureSpace(doc: PDFDoc, height: number): void {
   if (doc.y + height > PAGE.bottom) doc.addPage();
 }
 
-function sectionTitle(doc: PDFKit.PDFDocument, title: string): void {
+function sectionTitle(doc: PDFDoc, title: string): void {
   ensureSpace(doc, 30);
   doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(12).text(title, PAGE.left, doc.y);
   doc.strokeColor(COLORS.border).lineWidth(0.7).moveTo(PAGE.left, doc.y + 5).lineTo(PAGE.right, doc.y + 5).stroke();
@@ -73,7 +75,7 @@ function sectionTitle(doc: PDFKit.PDFDocument, title: string): void {
 }
 
 function drawMetaCard(
-  doc: PDFKit.PDFDocument,
+  doc: PDFDoc,
   title: string,
   fields: Array<[string, string]>,
   x: number,
@@ -98,7 +100,7 @@ function drawMetaCard(
 }
 
 function drawTable(
-  doc: PDFKit.PDFDocument,
+  doc: PDFDoc,
   headers: string[],
   rows: string[][],
   widths: number[],
@@ -142,7 +144,7 @@ function drawTable(
   });
 }
 
-function drawEvidenceTable(doc: PDFKit.PDFDocument, report: InspectionReport): void {
+function drawEvidenceTable(doc: PDFDoc, report: InspectionReport): void {
   const rows = report.evidence.map((e, index) => [
     String(index + 1),
     display(e.title),
