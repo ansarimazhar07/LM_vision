@@ -1,0 +1,21 @@
+# ==============================================================================
+# Render Blueprint Specification — LM-Vision AI Engine Backend
+# Docs: https://render.com/docs/blueprint-spec
+# ==============================================================================
+
+services:
+  - type: web
+    name: lm-vision-ai-engine
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install && npm run build:backend
+    startCommand: npm run start:backend
+    healthCheckPath: /api/v1/ai/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AI_DEFAULT_PROVIDER
+        value: GEMINI
+      - key: GEMINI_API_KEY
+        sync: false

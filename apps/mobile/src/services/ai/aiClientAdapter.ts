@@ -25,21 +25,44 @@ import { callGeminiDirect, isDirectGeminiAvailable } from './directGeminiClient'
 export type AIExecutionMode = 'REAL' | 'OFFLINE' | 'HYBRID' | 'DEMO' | 'LOCAL_ONLY';
 
 function resolveBackendUrl(configuredUrl?: string): string {
+  // Dynamically extract the Metro host IP if running in Expo development
+  let metroHost: string | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const Constants = require('expo-constants')?.default ?? require('expo-constants');
+    const hostUri =
+      Constants?.expoConfig?.hostUri ??
+      Constants?.manifest2?.extra?.expoGo?.debuggerHost ??
+      Constants?.manifest?.debuggerHost;
+    if (hostUri) {
+      metroHost = hostUri.split(':')[0] || null;
+    }
+  } catch {
+    // Ignore in non-Expo or test environments
+  }
+
+  const fallbackHost =
+    metroHost && metroHost !== 'localhost' && metroHost !== '127.0.0.1'
+      ? metroHost
+      : '10.60.111.108';
+
+  const defaultUrl = `http://${fallbackHost}:3001`;
+
   const urlCandidate =
     configuredUrl ||
     (typeof process !== 'undefined'
       ? process.env?.['EXPO_PUBLIC_AI_ENGINE_URL'] ||
         process.env?.['NEXT_PUBLIC_APP_URL'] ||
-        'http://10.155.155.108:3001'
-      : 'http://10.155.155.108:3001');
+        defaultUrl
+      : defaultUrl);
 
-  // If localhost is used on physical device, route to host LAN IP
+  // If localhost/127.0.0.1 is targeted from an Android device, map to reachable host
   if (urlCandidate.includes('localhost') || urlCandidate.includes('127.0.0.1')) {
     const port = urlCandidate.match(/:(\d+)/)?.[1] || '3001';
-    return `http://10.155.155.108:${port}`;
+    return `http://${fallbackHost}:${port}`;
   }
 
-  return urlCandidate;
+  return urlCandidate.replace(/\/$/, '').replace(/\/api\/v1$/, '');
 }
 
 /**

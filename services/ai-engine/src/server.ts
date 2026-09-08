@@ -389,7 +389,7 @@ export async function startAiEngineServer(options?: ServerOptions): Promise<{ se
       : 3001);
 
   return new Promise((resolve) => {
-    server.listen(port, () => {
+    server.listen(port, '0.0.0.0', () => {
       resolve({ server, port });
     });
   });

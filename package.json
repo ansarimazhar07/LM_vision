@@ -11,12 +11,14 @@
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
+    "build:backend": "npm run build --workspace=@lm-vision/config --if-present && npm run build --workspace=@lm-vision/shared-types --if-present && npm run build --workspace=@lm-vision/rules --if-present && npm run build --workspace=@lm-vision/validation --if-present && npm run build --workspace=@lm-vision/ai-engine",
     "test": "vitest run",
     "test:watch": "vitest",
     "start:mobile": "npm run start --workspace=@lm-vision/mobile",
     "start:mobile:web": "npm run web --workspace=@lm-vision/mobile",
     "start:mobile:android": "npm run android --workspace=@lm-vision/mobile",
     "start:ai": "npm run dev --workspace=@lm-vision/ai-engine",
+    "start:backend": "node services/ai-engine/dist/run-server.js",
     "lint": "echo \"Linting placeholder for Phase 1\""
   },
   "devDependencies": {
