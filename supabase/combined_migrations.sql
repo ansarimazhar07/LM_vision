@@ -60,50 +60,6 @@ comment on function public.current_user_id() is
   'Returns the UUID of the currently authenticated Supabase Auth user. '
   'Used in RLS policies. Returns NULL for unauthenticated requests.';
 
--- =============================================================================
--- Utility: get the application role for the current authenticated user
--- Used in RLS policies to check role-based access.
--- =============================================================================
-create or replace function public.current_user_role()
-returns text
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select u.role_id::text
-  from public.users u
-  where u.id = auth.uid()
-  limit 1;
-$$;
-
-comment on function public.current_user_role() is
-  'Returns the role name for the currently authenticated user from the application users table. '
-  'NOTE: This is the application-level role (INSPECTOR/SUPERVISOR/ADMIN/AUDITOR), not the PostgreSQL role.';
-
--- =============================================================================
--- Utility: check if current user has a specific role by role name
--- =============================================================================
-create or replace function public.current_user_has_role(role_name text)
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (
-    select 1
-    from public.users u
-    join public.roles r on r.id = u.role_id
-    where u.id = auth.uid()
-      and r.name = role_name
-      and u.is_active = true
-  );
-$$;
-
-comment on function public.current_user_has_role(text) is
-  'Returns true if the currently authenticated user has the specified application role. '
-  'Example: public.current_user_has_role(''ADMIN'')';
 
 
 
@@ -267,6 +223,67 @@ comment on function public.handle_new_auth_user() is
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_auth_user();
+
+-- =============================================================================
+-- Utility: get the application role for the current authenticated user
+-- Used in RLS policies to check role-based access.
+-- =============================================================================
+create or replace function public.current_user_role()
+returns text
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_role text;
+begin
+  select r.name into v_role
+  from public.users u
+  join public.roles r on r.id = u.role_id
+  where u.id = auth.uid()
+  limit 1;
+  return v_role;
+exception when others then
+  return null;
+end;
+$$;
+
+comment on function public.current_user_role() is
+  'Returns the role name for the currently authenticated user from the application users table. '
+  'NOTE: This is the application-level role (INSPECTOR/SUPERVISOR/ADMIN/AUDITOR), not the PostgreSQL role.';
+
+-- =============================================================================
+-- Utility: check if current user has a specific role by role name
+-- =============================================================================
+create or replace function public.current_user_has_role(role_name text)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_exists boolean;
+begin
+  select exists (
+    select 1
+    from public.users u
+    join public.roles r on r.id = u.role_id
+    where u.id = auth.uid()
+      and r.name = role_name
+      and u.is_active = true
+  ) into v_exists;
+  return coalesce(v_exists, false);
+exception when others then
+  return false;
+end;
+$$;
+
+comment on function public.current_user_has_role(text) is
+  'Returns true if the currently authenticated user has the specified application role. '
+  'Example: public.current_user_has_role(''ADMIN'')';
+
 
 
 
