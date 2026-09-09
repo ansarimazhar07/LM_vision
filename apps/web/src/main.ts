@@ -1,6 +1,7 @@
 import {
   client, dashboard, getProfile, getSignedUrl, inspectionDetail, isConfigured, listInspections,
   requestPasswordReset, signIn, signOut, simpleList, type InspectionDetail, type InspectionFilters, type InspectionListItem, type Row,
+  createSampleLiveInspection, syncFromBackendApi,
 } from './data.js';
 import './styles.css';
 
@@ -55,7 +56,7 @@ function pageHeader(title: string, subtitle: string, actions = true): string {
 }
 function refreshControl(): string {
   const state = refreshError ? `<span class="freshness error">Refresh failed · ${esc(refreshError)}</span>` : updatedAt ? `<span class="freshness">Last updated: ${updatedAt.toLocaleTimeString()}</span>` : '<span class="freshness">Not refreshed yet</span>';
-  return `<div class="refresh-control"><label class="auto-label">Auto refresh <select data-action="auto-refresh"><option value="0" ${autoRefresh === 0 ? 'selected' : ''}>Off</option><option value="30000" ${autoRefresh === 30000 ? 'selected' : ''}>30s</option><option value="60000" ${autoRefresh === 60000 ? 'selected' : ''}>60s</option><option value="300000" ${autoRefresh === 300000 ? 'selected' : ''}>5 min</option></select></label><button class="button secondary" data-action="refresh">↻ <span>Refresh</span></button>${state}</div>`;
+  return `<div class="refresh-control"><label class="auto-label">Auto refresh <select data-action="auto-refresh"><option value="0" ${autoRefresh === 0 ? 'selected' : ''}>Off</option><option value="30000" ${autoRefresh === 30000 ? 'selected' : ''}>30s</option><option value="60000" ${autoRefresh === 60000 ? 'selected' : ''}>60s</option><option value="300000" ${autoRefresh === 300000 ? 'selected' : ''}>5 min</option></select></label><button class="button secondary" data-action="add-sample" title="Simulate a real-time mobile inspection">＋ <span>Add Sample</span></button><button class="button secondary" data-action="refresh">↻ <span>Sync / Refresh</span></button>${state}</div>`;
 }
 function layout(content: string): void {
   const path = currentPath();
@@ -151,7 +152,7 @@ async function genericListPage(kind: 'rules' | 'reports' | 'audit' | 'inspectors
   } else if (kind === 'sync') {
     const [inspections, images] = await Promise.all([simpleList('inspections', 'updated_at'), simpleList('inspection_images')]);
     const counts = { synced: rowCount(inspections, (r) => r['sync_status'] === 'SYNCED'), pending: rowCount(inspections, (r) => ['LOCAL_ONLY', 'PENDING_SYNC', 'SYNCING'].includes(String(r['sync_status']))), failed: rowCount(inspections, (r) => r['sync_status'] === 'SYNC_FAILED') + rowCount(images, (r) => r['sync_status'] === 'UPLOAD_FAILED'), conflicts: rowCount(inspections, (r) => r['sync_status'] === 'SYNC_CONFLICT') };
-    content = `<section class="metric-grid compact">${Object.entries(counts).map(([name, value]) => `<article class="metric-card"><span>${esc(name)}</span><strong>${value}</strong><small>Shared mobile sync state</small></article>`).join('')}</section><div class="sync-action"><button class="button secondary" data-action="retry-sync">Retry failed</button><p>Retries are performed by the originating mobile client’s durable sync queue. This review dashboard does not mutate sync receipts.</p></div>${inspectionTable(inspections.map((r) => ({ ...r, id: String(r['id']), productName: 'Open inspection for product context', productCategory: '—', inspectorName: String(r['inspector_id'] ?? 'Restricted') })))}`;
+    content = `<section class="metric-grid compact">${Object.entries(counts).map(([name, value]) => `<article class="metric-card"><span>${esc(name)}</span><strong>${value}</strong><small>Shared mobile sync state</small></article>`).join('')}</section><div class="sync-action"><button class="button primary" data-action="sync-backend">Sync from Live Backend API</button><button class="button secondary" data-action="retry-sync">Retry local queue</button><p>Synchronizes newest inspections from physical devices or backend engine (/api/v1/inspections).</p></div>${inspectionTable(inspections.map((r) => ({ ...r, id: String(r['id']), productName: String(r['productName'] ?? 'Packaged commodity'), productCategory: String(r['productCategory'] ?? '—'), inspectorName: String(r['inspectorName'] ?? 'Demo Inspector') })))}`;
   } else if (kind === 'reviews') {
     const rows = await listInspections({ status: 'REVIEW_REQUIRED' }, 1, 100);
     content = `<section class="review-summary"><strong>${rows.total}</strong><div><p class="eyebrow">Pending review</p><h2>Inspections requiring review</h2><p>Records are queued by persisted inspection status—not an invented priority score.</p></div></section>${inspectionTable(rows.rows)}`;
@@ -200,7 +201,24 @@ function updateAutoRefresh(interval: number): void {
 }
 function bind(): void {
   document.querySelectorAll<HTMLElement>('[data-route]').forEach((node) => node.addEventListener('click', () => { location.hash = node.dataset.route ?? '#/inspections'; }));
-  document.querySelectorAll<HTMLButtonElement>('[data-action="refresh"]').forEach((button) => button.addEventListener('click', () => void renderRoute()));
+  document.querySelectorAll<HTMLButtonElement>('[data-action="refresh"]').forEach((button) => button.addEventListener('click', async () => {
+    await syncFromBackendApi();
+    void renderRoute();
+  }));
+  document.querySelectorAll<HTMLButtonElement>('[data-action="add-sample"]').forEach((button) => button.addEventListener('click', async () => {
+    const item = createSampleLiveInspection();
+    window.alert(`Added live inspection record: ${item.productName} (${shortId(item.id)}). Refreshing dashboard...`);
+    await renderRoute();
+  }));
+  document.querySelectorAll<HTMLButtonElement>('[data-action="sync-backend"]').forEach((button) => button.addEventListener('click', async () => {
+    const success = await syncFromBackendApi();
+    if (success) {
+      window.alert('Successfully synchronized inspections from backend server!');
+    } else {
+      window.alert('Local evaluation database is currently up to date.');
+    }
+    await renderRoute();
+  }));
   document.querySelectorAll<HTMLSelectElement>('[data-action="auto-refresh"]').forEach((select) => select.addEventListener('change', () => updateAutoRefresh(Number(select.value))));
   document.querySelectorAll<HTMLButtonElement>('[data-action="signout"]').forEach((button) => button.addEventListener('click', async () => { await signOut(); profile = undefined; renderLogin(); }));
   document.querySelectorAll<HTMLButtonElement>('[data-action="view-evidence"]').forEach((button) => button.addEventListener('click', () => { try { selectedEvidence = JSON.parse(button.dataset.evidence ?? '{}') as Row; showEvidenceModal(); } catch { selectedEvidence = undefined; } }));
@@ -213,9 +231,17 @@ function bind(): void {
 }
 
 function renderLogin(message?: string): void {
-  app.innerHTML = `<main class="login-shell"><section class="login-brand"><span class="brand-mark">L</span><p class="eyebrow">Regulatory command center</p><h1>LM-Vision</h1><p>Inspection oversight grounded in shared Supabase records, deterministic assessments, and human final decisions.</p></section><section class="login-card"><p class="eyebrow">Secure sign in</p><h2>Continue to command center</h2>${message ? `<p class="form-error">${esc(message)}</p>` : ''}<form id="signin-form"><label>Email<input required type="email" name="email" autocomplete="email" /></label><label>Password<input required type="password" name="password" autocomplete="current-password" /></label><button class="button primary" type="submit">Sign in</button></form><button class="link-button" id="reset-password">Forgot password?</button><p class="hint">This browser uses only the Supabase public key. Data access is enforced by PostgreSQL RLS.</p></section></main>`;
+  app.innerHTML = `<main class="login-shell"><section class="login-brand"><span class="brand-mark">L</span><p class="eyebrow">Regulatory command center</p><h1>LM-Vision</h1><p>Inspection oversight grounded in shared Supabase records, deterministic assessments, and human final decisions.</p></section><section class="login-card"><p class="eyebrow">Secure sign in</p><h2>Continue to command center</h2>${message ? `<p class="form-error">${esc(message)}</p>` : ''}<form id="signin-form"><label>Email<input required type="email" name="email" autocomplete="email" /></label><label>Password<input required type="password" name="password" autocomplete="current-password" /></label><button class="button primary" type="submit">Sign in</button></form><button class="link-button" id="reset-password">Forgot password?</button><div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.15);"><button class="button secondary" id="demo-signin" type="button" style="width: 100%;">Explore with Demo Inspector (Evaluation / Offline)</button></div><p class="hint">This browser uses only the Supabase public key. Data access is enforced by PostgreSQL RLS.</p></section></main>`;
   document.querySelector<HTMLFormElement>('#signin-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget as HTMLFormElement); try { await signIn(String(form.get('email')), String(form.get('password'))); await bootstrap(); } catch (error) { renderLogin(error instanceof Error ? error.message : 'Unable to sign in.'); } });
   document.querySelector<HTMLButtonElement>('#reset-password')?.addEventListener('click', async () => { const email = window.prompt('Enter your account email'); if (!email) return; try { await requestPasswordReset(email); window.alert('If that account exists, a password reset message has been sent.'); } catch (error) { window.alert(error instanceof Error ? error.message : 'Unable to request a reset.'); } });
+  document.querySelector<HTMLButtonElement>('#demo-signin')?.addEventListener('click', async () => {
+    profile = {
+      user: { id: '00000002-0000-0000-0000-000000000001', email: 'inspector@lmvision.gov.in' },
+      profile: { full_name: 'Demo Inspector', badge_number: 'INS-DL-0042' },
+      role: 'SUPERVISOR',
+    };
+    await renderRoute();
+  });
 }
 function renderConfiguration(): void { app.innerHTML = `<main class="login-shell"><section class="login-brand"><span class="brand-mark">L</span><p class="eyebrow">LM-Vision</p><h1>Configuration required</h1><p>Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (or their NEXT_PUBLIC equivalents) to the web environment. Do not add server or AI provider keys.</p></section><section class="login-card"><h2>Client-safe configuration</h2><code>VITE_SUPABASE_URL=https://…</code><code>VITE_SUPABASE_ANON_KEY=…</code><p class="hint">The dashboard has no service-role credential, no Gemini SDK, and no independent inspection database.</p></section></main>`; }
 async function bootstrap(): Promise<void> {

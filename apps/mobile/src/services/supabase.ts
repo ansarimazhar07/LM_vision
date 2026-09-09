@@ -1,5 +1,5 @@
 import 'react-native-url-polyfill/auto';
-import { createMobileSafeClient } from '@lm-vision/supabase-client/browser';
+import { createMobileSafeClient } from '@lm-vision/supabase-client';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getMobileConfig, type MobileConfig } from '../config';
 

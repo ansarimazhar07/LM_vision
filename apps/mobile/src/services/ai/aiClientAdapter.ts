@@ -20,12 +20,28 @@ import {
   ensureCanonicalUuid,
   buildStatutoryFindingsAndEvidence,
 } from './statutoryFindings';
-import { callGeminiDirect, isDirectGeminiAvailable } from './directGeminiClient';
 
 export type AIExecutionMode = 'REAL' | 'OFFLINE' | 'HYBRID' | 'DEMO' | 'LOCAL_ONLY';
 
 function resolveBackendUrl(configuredUrl?: string): string {
-  // Dynamically extract the Metro host IP if running in Expo development
+  // Read EXPO_PUBLIC_* directly so Metro inlines static literals into the client bundle
+  const envUrl =
+    typeof process !== 'undefined'
+      ? process.env.EXPO_PUBLIC_AI_ENGINE_URL ||
+        process.env.EXPO_PUBLIC_APP_URL ||
+        process.env.EXPO_PUBLIC_API_URL ||
+        process.env.NEXT_PUBLIC_APP_URL ||
+        process.env.NEXT_PUBLIC_API_URL
+      : undefined;
+
+  const target = configuredUrl || envUrl;
+
+  // If a hosted HTTPS backend URL is configured, use it directly (e.g., https://lm-vision-r622.onrender.com)
+  if (target && !target.includes('localhost') && !target.includes('127.0.0.1')) {
+    return target.replace(/\/$/, '').replace(/\/api\/v1$/, '');
+  }
+
+  // Otherwise, in local development targeting localhost, resolve host IP dynamically
   let metroHost: string | null = null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -44,17 +60,10 @@ function resolveBackendUrl(configuredUrl?: string): string {
   const fallbackHost =
     metroHost && metroHost !== 'localhost' && metroHost !== '127.0.0.1'
       ? metroHost
-      : '10.60.111.108';
+      : '10.0.2.2';
 
   const defaultUrl = `http://${fallbackHost}:3001`;
-
-  const urlCandidate =
-    configuredUrl ||
-    (typeof process !== 'undefined'
-      ? process.env?.['EXPO_PUBLIC_AI_ENGINE_URL'] ||
-        process.env?.['NEXT_PUBLIC_APP_URL'] ||
-        defaultUrl
-      : defaultUrl);
+  const urlCandidate = target || defaultUrl;
 
   // If localhost/127.0.0.1 is targeted from an Android device, map to reachable host
   if (urlCandidate.includes('localhost') || urlCandidate.includes('127.0.0.1')) {
@@ -432,6 +441,7 @@ export class MobileAIClientAdapter implements AIProvider {
 
       this.assertNetworkAllowed('REAL package-analysis fetch');
       try {
+        console.log(`[MobileAIClient] Calling AI Engine at: ${this.backendUrl}/api/v1/ai/package-analysis?provider=GEMINI`);
         const response = await fetch(`${this.backendUrl}/api/v1/ai/package-analysis?provider=GEMINI`, {
           method: 'POST',
           headers: {
@@ -451,48 +461,18 @@ export class MobileAIClientAdapter implements AIProvider {
       } catch (networkErr: any) {
         console.warn('[MobileAIClient] Backend AI Engine unavailable:', networkErr?.message || networkErr);
 
-        // ── Tier 2: Direct Gemini API call from device ──
-        if (isDirectGeminiAvailable()) {
-          try {
-            console.log('[MobileAIClient] Trying direct Gemini API call (no backend)...');
-            options?.onProgress?.({
-              stage: 'EXTRACTING_DECLARATIONS',
-              label: 'Backend offline. Calling Gemini directly from device...',
-              progressPercent: 50,
-            });
+        // Tier 2: Resilient local on-device perception fallback
+        const fallbackReason = 'Gemini backend unavailable. Continuing with on-device analysis.';
+        options?.onFallback?.(fallbackReason);
 
-            const preparedForDirect = await Promise.all(
-              images.map(async (img) => ({
-                imageId: ensureCanonicalUuid(img.id),
-                surface: img.surface,
-                mimeType: img.mimeType || 'image/jpeg',
-                base64Data: await this.resolveImageBase64(img),
-              }))
-            );
+        options?.onProgress?.({
+          stage: 'EXTRACTING_OCR',
+          label: `${fallbackReason} Running on-device OCR...`,
+          progressPercent: 50,
+        });
 
-            analysis = await callGeminiDirect(preparedForDirect, canonicalInspectionId, 60000);
-            console.log(`[MobileAIClient] Direct Gemini succeeded with ${analysis.declarations.length} declarations!`);
-            usedFallback = false; // Direct Gemini is still Gemini quality
-          } catch (directErr: any) {
-            console.warn('[MobileAIClient] Direct Gemini also failed:', directErr?.message || directErr);
-            // Fall through to Tier 3
-          }
-        }
-
-        // ── Tier 3: Local on-device perception fallback ──
-        if (!analysis) {
-          const fallbackReason = 'Gemini unavailable (backend & direct). Using on-device analysis.';
-          options?.onFallback?.(fallbackReason);
-
-          options?.onProgress?.({
-            stage: 'EXTRACTING_OCR',
-            label: `${fallbackReason} Running on-device OCR...`,
-            progressPercent: 50,
-          });
-
-          analysis = await executeLocalPerception(images, canonicalInspectionId, options);
-          usedFallback = true;
-        }
+        analysis = await executeLocalPerception(images, canonicalInspectionId, options);
+        usedFallback = true;
       }
 
       // Safety guard — analysis is always assigned by one of the 3 tiers above
@@ -759,11 +739,14 @@ export class MobileAIClientAdapter implements AIProvider {
 
     try {
       this.assertNetworkAllowed('healthCheck REAL fetch');
+      console.log(`[MobileAIClient] Checking backend health at: ${this.backendUrl}/api/v1/ai/health`);
       const res = await fetch(`${this.backendUrl}/api/v1/ai/health`);
       if (res.ok) {
         const json = await res.json();
+        console.log('[MobileAIClient] Backend is healthy:', json.data);
         return json.data;
       }
+      console.warn(`[MobileAIClient] Backend returned HTTP ${res.status}`);
       return {
         provider: 'GEMINI',
         modelName: this.defaultModel,
@@ -772,7 +755,8 @@ export class MobileAIClientAdapter implements AIProvider {
         message: `Backend AI Engine returned HTTP ${res.status}`,
         timestamp: new Date().toISOString(),
       };
-    } catch {
+    } catch (healthErr: any) {
+      console.warn(`[MobileAIClient] Backend health check failed at ${this.backendUrl}:`, healthErr?.message || healthErr);
       return {
         provider: 'GEMINI',
         modelName: this.defaultModel,

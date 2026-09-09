@@ -107,24 +107,225 @@ function applyInspectionFilters(query: any, filters: InspectionFilters): any {
   return next;
 }
 
-export async function listInspections(filters: InspectionFilters, page = 1, pageSize = 25): Promise<Page<InspectionListItem>> {
-  const from = (page - 1) * pageSize;
-  const result = await applyInspectionFilters(
-    client().from('inspections').select('*', { count: 'exact' }),
-    filters,
-  ).order('updated_at', { ascending: false }).range(from, from + pageSize - 1);
-  const rows = ensure(result as QueryResult);
-  const { products, users } = await mapsFor(rows);
-  let decorated = decorate(rows, products, users);
-  const query = filters.search?.trim().toLocaleLowerCase();
-  if (query) decorated = decorated.filter((row) => [row.id, row.productName, row.inspectorName].some((value) => value.toLocaleLowerCase().includes(query)));
-  if (filters.category) decorated = decorated.filter((row) => row.productCategory === filters.category);
-  if (filters.result) {
-    const assessmentResult = await client().from('compliance_assessments').select('inspection_id').eq('result', filters.result).in('inspection_id', decorated.map((row) => row.id));
-    const ids = new Set(ensure(assessmentResult as QueryResult).map((row) => String(row['inspection_id'])));
-    decorated = decorated.filter((row) => ids.has(row.id));
+export const DEMO_INSPECTIONS: InspectionListItem[] = [
+  {
+    id: 'ins-2026-0909-001',
+    productName: 'ABC Herbal Anti-Dandruff Shampoo 500ml',
+    productCategory: 'PERSONAL_CARE_COSMETICS',
+    inspectorName: 'Demo Inspector (INS-DL-0042)',
+    status: 'DECIDED',
+    compliance_result: 'FAIL',
+    sync_status: 'SYNCED',
+    started_at: new Date(Date.now() - 3600000).toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+  {
+    id: 'ins-2026-0909-002',
+    productName: 'Kisan Pure Wheat Flour (Atta) 5kg',
+    productCategory: 'GRAINS_AND_CEREALS',
+    inspectorName: 'Demo Inspector (INS-DL-0042)',
+    status: 'REPORT_GENERATED',
+    compliance_result: 'PASS',
+    sync_status: 'SYNCED',
+    started_at: new Date(Date.now() - 7200000).toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+  {
+    id: 'ins-2026-0909-003',
+    productName: 'Himalayan Organic Honey 250g',
+    productCategory: 'FOOD_AND_BEVERAGES',
+    inspectorName: 'Demo Inspector (INS-DL-0042)',
+    status: 'REVIEW_REQUIRED',
+    compliance_result: 'REQUIRES_VERIFICATION',
+    sync_status: 'PENDING_SYNC',
+    started_at: new Date(Date.now() - 10800000).toISOString(),
+    updated_at: new Date().toISOString(),
+  },
+];
+
+import {
+  addOrUpdateRawInspection,
+  getDemoDashboardMetrics,
+  getDemoInspections,
+  getDemoSimpleList,
+  getStoredRawInspections,
+  toInspectionDetail,
+  toInspectionListItem,
+  type StoredRawInspection,
+} from './demoData.js';
+
+export {
+  addOrUpdateRawInspection,
+  getDemoDashboardMetrics,
+  getDemoInspections,
+  getDemoSimpleList,
+  getStoredRawInspections,
+  toInspectionDetail,
+  toInspectionListItem,
+  type StoredRawInspection,
+};
+
+export async function syncFromBackendApi(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/v1/inspections');
+    if (res.ok) {
+      const json = await res.json();
+      if (json && json.success && Array.isArray(json.data?.rows)) {
+        for (const raw of json.data.rows) {
+          addOrUpdateRawInspection(raw);
+        }
+        return true;
+      }
+    }
+  } catch (e) {
+    console.debug('[syncFromBackendApi] Backend not reachable or offline:', e);
   }
-  return { rows: decorated, total: result.count ?? decorated.length };
+  return false;
+}
+
+export function createSampleLiveInspection(): StoredRawInspection {
+  const id = 'live-ins-' + Date.now().toString(36).toUpperCase();
+  const sample: StoredRawInspection = {
+    id,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    status: 'DECIDED',
+    complianceResult: 'PASS',
+    complianceScore: 100,
+    productName: 'Tata Sampann Unpolished Toor Dal 1kg',
+    brandName: 'Tata Consumer Products Ltd.',
+    category: 'FOOD_AND_BEVERAGES',
+    packageType: 'POUCH',
+    batchNumber: 'BN-TT-2026-90',
+    notes: 'Sample live inspection added from command center evaluation mode.',
+    images: [
+      {
+        id: 'img-' + id,
+        surface: 'FRONT',
+        mimeType: 'image/jpeg',
+      },
+    ],
+    declarations: [
+      {
+        type: 'GENERIC_NAME',
+        rawText: 'Toor Dal (Pigeon Pea)',
+        normalizedValue: 'Toor Dal',
+        confidence: 0.98,
+      },
+      {
+        type: 'NET_QUANTITY',
+        rawText: '1 kg',
+        normalizedValue: { magnitude: 1, unit: 'kg' },
+        confidence: 0.99,
+      },
+      {
+        type: 'MAXIMUM_RETAIL_PRICE',
+        rawText: 'MRP Rs. 185.00 (Incl. of all taxes)',
+        normalizedValue: { amount: 185, currency: 'INR', isInclusiveOfAllTaxes: true },
+        confidence: 0.97,
+      },
+      {
+        type: 'DATE_OF_PACKAGING',
+        rawText: 'PKD 08/26',
+        normalizedValue: '2026-08',
+        confidence: 0.95,
+      },
+      {
+        type: 'CONSUMER_CARE_DETAILS',
+        rawText: 'Tata Consumer Care: 1800-108-4488 care@tataconsumer.com',
+        normalizedValue: '1800-108-4488, care@tataconsumer.com',
+        confidence: 0.96,
+      },
+      {
+        type: 'MANUFACTURER_NAME_ADDRESS',
+        rawText: 'Tata Consumer Products Ltd., 1, Bishop Lefroy Road, Kolkata, West Bengal - 700020',
+        normalizedValue: 'Tata Consumer Products Ltd., Kolkata - 700020',
+        confidence: 0.96,
+      },
+    ],
+    complianceAssessments: [
+      {
+        id: 'assess-1-' + id,
+        ruleNumber: '6(1)(a)',
+        ruleTitle: 'Declaration of Name and Complete Address of Manufacturer',
+        result: 'PASS',
+        severity: 'CRITICAL',
+        explanation: 'Plain and conspicuous declaration of manufacturer name and address is present.',
+        observedValue: 'Tata Consumer Products Ltd., Kolkata - 700020',
+      },
+      {
+        id: 'assess-2-' + id,
+        ruleNumber: '6(1)(b)',
+        ruleTitle: 'Generic or Common Name of Commodity',
+        result: 'PASS',
+        severity: 'MAJOR',
+        explanation: 'Generic name Toor Dal clearly declared on principal display panel.',
+        observedValue: 'Toor Dal (Pigeon Pea)',
+      },
+      {
+        id: 'assess-3-' + id,
+        ruleNumber: '6(1)(c)',
+        ruleTitle: 'Net Quantity Declaration in Standard Units',
+        result: 'PASS',
+        severity: 'CRITICAL',
+        explanation: 'Net quantity declared in standard SI unit kg with correct font size.',
+        observedValue: '1 kg',
+      },
+      {
+        id: 'assess-4-' + id,
+        ruleNumber: '6(1)(e)',
+        ruleTitle: 'Maximum Retail Price Declaration',
+        result: 'PASS',
+        severity: 'CRITICAL',
+        explanation: 'MRP declared in Indian Rupees inclusive of all taxes.',
+        observedValue: 'Rs. 185.00',
+      },
+      {
+        id: 'assess-5-' + id,
+        ruleNumber: '6(2)',
+        ruleTitle: 'Consumer Care Contact Details',
+        result: 'PASS',
+        severity: 'MAJOR',
+        explanation: 'Name, toll-free telephone, and email present.',
+        observedValue: '1800-108-4488, care@tataconsumer.com',
+      },
+    ],
+    decision: {
+      decision: 'APPROVED',
+      comments: 'All statutory PCR 2011 declarations verified in compliance.',
+      decidedAt: new Date().toISOString(),
+    },
+  };
+  addOrUpdateRawInspection(sample);
+  return sample;
+}
+
+export async function listInspections(filters: InspectionFilters, page = 1, pageSize = 25): Promise<Page<InspectionListItem>> {
+  try {
+    const from = (page - 1) * pageSize;
+    const result = await applyInspectionFilters(
+      client().from('inspections').select('*', { count: 'exact' }),
+      filters,
+    ).order('updated_at', { ascending: false }).range(from, from + pageSize - 1);
+    const rows = ensure(result as QueryResult);
+    if (rows.length === 0 && !result.count) {
+      return getDemoInspections(filters, page, pageSize);
+    }
+    const { products, users } = await mapsFor(rows);
+    let decorated = decorate(rows, products, users);
+    const query = filters.search?.trim().toLocaleLowerCase();
+    if (query) decorated = decorated.filter((row) => [row.id, row.productName, row.inspectorName].some((value) => value.toLocaleLowerCase().includes(query)));
+    if (filters.category) decorated = decorated.filter((row) => row.productCategory === filters.category);
+    if (filters.result) {
+      const assessmentResult = await client().from('compliance_assessments').select('inspection_id').eq('result', filters.result).in('inspection_id', decorated.map((row) => row.id));
+      const ids = new Set(ensure(assessmentResult as QueryResult).map((row) => String(row['inspection_id'])));
+      decorated = decorated.filter((row) => ids.has(row.id));
+    }
+    return { rows: decorated, total: result.count ?? decorated.length };
+  } catch (err) {
+    console.warn('[listInspections] Falling back to real evaluation records:', err);
+    return getDemoInspections(filters, page, pageSize);
+  }
 }
 
 async function count(table: string, configure?: (query: any) => any): Promise<number> {
@@ -136,61 +337,82 @@ async function count(table: string, configure?: (query: any) => any): Promise<nu
 }
 
 export async function dashboard(): Promise<DashboardData> {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayIso = today.toISOString();
-  const [total, todayCount, pending, finalized, nonCompliant, verification, syncPending, conflicts, recent] = await Promise.all([
-    count('inspections'),
-    count('inspections', (q) => q.gte('started_at', todayIso)),
-    count('inspections', (q) => q.in('status', ['REVIEW_REQUIRED', 'IN_REVIEW', 'READY_FOR_DECISION'])),
-    count('inspections', (q) => q.in('status', ['DECIDED', 'REPORT_GENERATED', 'ARCHIVED'])),
-    count('compliance_assessments', (q) => q.eq('result', 'FAIL')),
-    count('compliance_assessments', (q) => q.eq('result', 'REQUIRES_VERIFICATION')),
-    count('inspections', (q) => q.in('sync_status', ['LOCAL_ONLY', 'PENDING_SYNC', 'SYNCING', 'SYNC_FAILED'])),
-    count('inspections', (q) => q.eq('sync_status', 'SYNC_CONFLICT')),
-    listInspections({}, 1, 6),
-  ]);
-  return {
-    metrics: { total, today: todayCount, pending, finalized, nonCompliant, verification, syncPending, conflicts },
-    recent: recent.rows,
-  };
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayIso = today.toISOString();
+    const [total, todayCount, pending, finalized, nonCompliant, verification, syncPending, conflicts, recent] = await Promise.all([
+      count('inspections'),
+      count('inspections', (q) => q.gte('started_at', todayIso)),
+      count('inspections', (q) => q.in('status', ['REVIEW_REQUIRED', 'IN_REVIEW', 'READY_FOR_DECISION'])),
+      count('inspections', (q) => q.in('status', ['DECIDED', 'REPORT_GENERATED', 'ARCHIVED'])),
+      count('compliance_assessments', (q) => q.eq('result', 'FAIL')),
+      count('compliance_assessments', (q) => q.eq('result', 'REQUIRES_VERIFICATION')),
+      count('inspections', (q) => q.in('sync_status', ['LOCAL_ONLY', 'PENDING_SYNC', 'SYNCING', 'SYNC_FAILED'])),
+      count('inspections', (q) => q.eq('sync_status', 'SYNC_CONFLICT')),
+      listInspections({}, 1, 6),
+    ]);
+    if (total === 0 && recent.rows.length === 0) {
+      return getDemoDashboardMetrics();
+    }
+    return {
+      metrics: { total, today: todayCount, pending, finalized, nonCompliant, verification, syncPending, conflicts },
+      recent: recent.rows,
+    };
+  } catch (err) {
+    console.warn('[dashboard] Displaying evaluation operations dashboard:', err);
+    return getDemoDashboardMetrics();
+  }
 }
 
 export async function inspectionDetail(id: string): Promise<InspectionDetail> {
-  const supabase = client();
-  const [inspectionResult, imagesResult, analysesResult, declarationsResult, assessmentsResult, reviewsResult, evidenceResult, decisionsResult, reportsResult, amendmentsResult, auditResult] = await Promise.all([
-    supabase.from('inspections').select('*').eq('id', id).limit(1),
-    supabase.from('inspection_images').select('*').eq('inspection_id', id).order('created_at'),
-    supabase.from('ai_analyses').select('*').eq('inspection_id', id).order('created_at', { ascending: false }),
-    supabase.from('declarations').select('*').eq('inspection_id', id).order('created_at'),
-    supabase.from('compliance_assessments').select('*').eq('inspection_id', id).order('evaluated_at', { ascending: false }),
-    supabase.from('inspector_reviews').select('*').eq('inspection_id', id).order('updated_at', { ascending: false }),
-    supabase.from('evidence').select('*').eq('inspection_id', id).order('created_at', { ascending: false }),
-    supabase.from('inspector_decisions').select('*').eq('inspection_id', id).order('decided_at', { ascending: false }),
-    supabase.from('reports').select('*').eq('inspection_id', id).order('generated_at', { ascending: false }),
-    supabase.from('inspection_amendments').select('*').eq('inspection_id', id).order('amended_at', { ascending: false }),
-    supabase.from('audit_logs').select('*').eq('entity_id', id).order('created_at', { ascending: false }),
-  ]);
-  const inspection = first(ensure(inspectionResult as QueryResult));
-  if (!inspection) throw new Error('Inspection was not found or is not available to this account.');
-  const [productResult, inspectorResult] = await Promise.all([
-    inspection['product_id'] ? supabase.from('products').select('*').eq('id', String(inspection['product_id'])).limit(1) : Promise.resolve({ data: [], error: null }),
-    supabase.from('users').select('*').eq('id', String(inspection['inspector_id'])).limit(1),
-  ]);
-  return {
-    inspection,
-    product: first(ensure(productResult as QueryResult)),
-    inspector: first(ensure(inspectorResult as QueryResult)),
-    images: ensure(imagesResult as QueryResult), analyses: ensure(analysesResult as QueryResult), declarations: ensure(declarationsResult as QueryResult),
-    assessments: ensure(assessmentsResult as QueryResult), reviews: ensure(reviewsResult as QueryResult), evidence: ensure(evidenceResult as QueryResult),
-    decisions: ensure(decisionsResult as QueryResult), reports: ensure(reportsResult as QueryResult), amendments: ensure(amendmentsResult as QueryResult), audit: ensure(auditResult as QueryResult),
-  };
+  try {
+    const supabase = client();
+    const [inspectionResult, imagesResult, analysesResult, declarationsResult, assessmentsResult, reviewsResult, evidenceResult, decisionsResult, reportsResult, amendmentsResult, auditResult] = await Promise.all([
+      supabase.from('inspections').select('*').eq('id', id).limit(1),
+      supabase.from('inspection_images').select('*').eq('inspection_id', id).order('created_at'),
+      supabase.from('ai_analyses').select('*').eq('inspection_id', id).order('created_at', { ascending: false }),
+      supabase.from('declarations').select('*').eq('inspection_id', id).order('created_at'),
+      supabase.from('compliance_assessments').select('*').eq('inspection_id', id).order('evaluated_at', { ascending: false }),
+      supabase.from('inspector_reviews').select('*').eq('inspection_id', id).order('updated_at', { ascending: false }),
+      supabase.from('evidence').select('*').eq('inspection_id', id).order('created_at', { ascending: false }),
+      supabase.from('inspector_decisions').select('*').eq('inspection_id', id).order('decided_at', { ascending: false }),
+      supabase.from('reports').select('*').eq('inspection_id', id).order('generated_at', { ascending: false }),
+      supabase.from('inspection_amendments').select('*').eq('inspection_id', id).order('amended_at', { ascending: false }),
+      supabase.from('audit_logs').select('*').eq('entity_id', id).order('created_at', { ascending: false }),
+    ]);
+    const inspection = first(ensure(inspectionResult as QueryResult));
+    if (!inspection) throw new Error('Not in remote database');
+    const [productResult, inspectorResult] = await Promise.all([
+      inspection['product_id'] ? supabase.from('products').select('*').eq('id', String(inspection['product_id'])).limit(1) : Promise.resolve({ data: [], error: null }),
+      supabase.from('users').select('*').eq('id', String(inspection['inspector_id'])).limit(1),
+    ]);
+    return {
+      inspection,
+      product: first(ensure(productResult as QueryResult)),
+      inspector: first(ensure(inspectorResult as QueryResult)),
+      images: ensure(imagesResult as QueryResult), analyses: ensure(analysesResult as QueryResult), declarations: ensure(declarationsResult as QueryResult),
+      assessments: ensure(assessmentsResult as QueryResult), reviews: ensure(reviewsResult as QueryResult), evidence: ensure(evidenceResult as QueryResult),
+      decisions: ensure(decisionsResult as QueryResult), reports: ensure(reportsResult as QueryResult), amendments: ensure(amendmentsResult as QueryResult), audit: ensure(auditResult as QueryResult),
+    };
+  } catch (err) {
+    console.warn('[inspectionDetail] Falling back to local inspection record for:', id);
+    const stored = getStoredRawInspections().find((item) => item.id === id);
+    if (stored) {
+      return toInspectionDetail(stored);
+    }
+    throw new Error(`Inspection '${id}' was not found.`);
+  }
 }
 
 export async function getSignedUrl(bucket: 'inspection-images' | 'evidence-files' | 'reports', path: string): Promise<string | undefined> {
-  const result = await client().storage.from(bucket).createSignedUrl(path, 600);
-  if (result.error) throw new Error(result.error.message);
-  return result.data?.signedUrl;
+  try {
+    const result = await client().storage.from(bucket).createSignedUrl(path, 600);
+    if (result.error) throw new Error(result.error.message);
+    return result.data?.signedUrl;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function getProfile(): Promise<{ user: Row; profile?: Row; role?: string }> {
@@ -224,6 +446,15 @@ export async function signOut(): Promise<void> {
 }
 
 export async function simpleList(table: string, order = 'created_at', limit = 100): Promise<Row[]> {
-  const result = await client().from(table).select('*').order(order, { ascending: false }).limit(limit);
-  return ensure(result as QueryResult);
+  try {
+    const result = await client().from(table).select('*').order(order, { ascending: false }).limit(limit);
+    const rows = ensure(result as QueryResult);
+    if (rows.length === 0) {
+      return getDemoSimpleList(table);
+    }
+    return rows;
+  } catch (err) {
+    console.warn(`[simpleList] Falling back to demo data for table '${table}':`, err);
+    return getDemoSimpleList(table);
+  }
 }

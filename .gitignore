@@ -1,8 +1,14 @@
 node_modules/
-dist/
+/dist/
+apps/*/dist/
+services/*/dist/
 .expo/
 *.log
-.env.local
+.env
+.env.*
+!.env.example
+apps/*/.env
+services/*/.env
 android/.gradle/
 android/app/build/
 android/build/

@@ -11,11 +11,29 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production",
+        "EXPO_PUBLIC_AI_ENGINE_URL": "https://lm-vision-r622.onrender.com",
+        "EXPO_PUBLIC_APP_URL": "https://lm-vision-r622.onrender.com",
+        "EXPO_PUBLIC_API_URL": "https://lm-vision-r622.onrender.com/api/v1",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://vcxxjjrqbbcbtpputzpx.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjeHhqanJxYmJjYnRwcHV0enB4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1OTY5NTMsImV4cCI6MjEwNDE3Mjk1M30.2jGtUQBTavfejF5rzBNwsWkX6c_syWn_Gongjgi543I",
+        "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_a0ADN2hjXIYxvMaM2hbJ7Q_lRyfld0D"
       }
     },
     "production": {
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production",
+        "EXPO_PUBLIC_AI_ENGINE_URL": "https://lm-vision-r622.onrender.com",
+        "EXPO_PUBLIC_APP_URL": "https://lm-vision-r622.onrender.com",
+        "EXPO_PUBLIC_API_URL": "https://lm-vision-r622.onrender.com/api/v1",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://vcxxjjrqbbcbtpputzpx.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjeHhqanJxYmJjYnRwcHV0enB4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1OTY5NTMsImV4cCI6MjEwNDE3Mjk1M30.2jGtUQBTavfejF5rzBNwsWkX6c_syWn_Gongjgi543I",
+        "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_a0ADN2hjXIYxvMaM2hbJ7Q_lRyfld0D"
       }
     }
   },

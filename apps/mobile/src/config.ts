@@ -1,4 +1,4 @@
-import { getClientEnv, type ClientEnv } from '@lm-vision/config/client';
+import { getClientEnv, type ClientEnv } from '@lm-vision/config';
 
 /** Only EXPO_PUBLIC_* values may cross the mobile runtime boundary. */
 export type MobileEnvInput = Record<string, string | undefined>;

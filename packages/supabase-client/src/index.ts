@@ -22,7 +22,7 @@ export * from './types/database.js';
 
 // Client factories
 export { createServerClient } from './clients/server.js';
-export { createBrowserClient } from './clients/browser.js';
+export { createBrowserClient, createMobileSafeClient } from './clients/browser.js';
 
 // Auth utilities
 export * from './auth/index.js';

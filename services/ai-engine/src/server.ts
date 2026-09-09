@@ -17,6 +17,7 @@ import {
 } from '@lm-vision/rules';
 import { AIEngineGateway, createProductionGateway } from './gateway.js';
 import { generateReportPdf } from './reporting/pdfGenerator.js';
+import { inspectionStore } from './storage/inspectionStore.js';
 
 const MAX_BODY_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB payload limit for base64 inspection images
 
@@ -107,6 +108,13 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
         // The backend dispatches to the server-configured provider (default GEMINI, fallback MOCK).
         const requestedProvider = (url.searchParams.get('provider')?.toUpperCase() as any) || undefined;
         const analysis = await aiGateway.analyzePackage(inputPayload, requestedProvider);
+
+        // Record inspection in persistent store for real-time dashboard sync
+        try {
+          inspectionStore.saveAnalysis(inputPayload, analysis);
+        } catch (storeErr) {
+          console.warn('[LM-Vision AI Engine] Error storing inspection in LocalInspectionStore:', storeErr);
+        }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
@@ -335,7 +343,65 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
         return;
       }
 
-      // 8. 404 Not Found
+      // 8. Route: Dashboard Operations Overview
+      if (req.method === 'GET' && (pathname === '/api/v1/dashboard/overview' || pathname === '/api/v1/dashboard')) {
+        const overview = inspectionStore.getOverview();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: overview, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 9. Route: List Inspections with Filters and Pagination
+      if (req.method === 'GET' && pathname === '/api/v1/inspections') {
+        const search = url.searchParams.get('search') || undefined;
+        const status = url.searchParams.get('status') || undefined;
+        const resultParam = url.searchParams.get('result') || undefined;
+        const category = url.searchParams.get('category') || undefined;
+        const page = Number(url.searchParams.get('page') || 1);
+        const pageSize = Number(url.searchParams.get('pageSize') || 25);
+        const result = inspectionStore.listInspections({ search, status, result: resultParam, category, page, pageSize });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: result, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 10. Route: Inspection Details by ID
+      const inspectionDetailMatch = pathname.match(/^\/api\/v1\/inspections\/([^/]+)$/);
+      if (req.method === 'GET' && inspectionDetailMatch && inspectionDetailMatch[1]) {
+        const inspectionId = decodeURIComponent(inspectionDetailMatch[1]);
+        const item = inspectionStore.getInspection(inspectionId);
+        if (!item) {
+          throw new AppError({ code: 'NOT_FOUND', message: `Inspection '${inspectionId}' not found.`, statusCode: 404 });
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: item, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 11. Route: Sync Draft from Mobile Client
+      if (req.method === 'POST' && (pathname === '/api/v1/inspections/sync' || pathname === '/api/v1/sync/draft')) {
+        const rawBody = await readRequestBody(req, 10 * 1024 * 1024);
+        let parsedJson: any;
+        try {
+          parsedJson = JSON.parse(rawBody);
+        } catch {
+          throw new AppError({ code: 'VALIDATION_ERROR', message: 'Invalid JSON body in sync request.', statusCode: 400 });
+        }
+        const synced = inspectionStore.saveDraft(parsedJson);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: synced, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 12. Route: Sync Status
+      if (req.method === 'GET' && pathname === '/api/v1/sync/status') {
+        const status = inspectionStore.getSyncStatus();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: status, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 13. 404 Not Found
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({

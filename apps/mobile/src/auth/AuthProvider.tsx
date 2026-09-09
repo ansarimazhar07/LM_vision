@@ -10,7 +10,7 @@ import {
   resetPasswordForEmail,
   updateUserPassword,
   updateUserProfile,
-} from '@lm-vision/supabase-client/auth';
+} from '@lm-vision/supabase-client';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LoginRequestSchema } from '@lm-vision/shared-types';
 import { getMobileSupabaseClient } from '../services/supabase';
