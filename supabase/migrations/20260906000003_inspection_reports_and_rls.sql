@@ -87,8 +87,9 @@ create policy reports_select_privileged
   using (
     exists (
       select 1 from public.users u
+      join public.roles r on r.id = u.role_id
       where u.id = auth.uid()
-        and u.role in ('SUPERVISOR', 'ADMIN', 'AUDITOR')
+        and r.name in ('SUPERVISOR', 'ADMIN', 'AUDITOR')
     )
   );
 
@@ -104,7 +105,8 @@ create policy reports_insert_authorized
       where i.id = inspection_id
         and (i.inspector_id = auth.uid() or exists (
           select 1 from public.users u
-          where u.id = auth.uid() and u.role in ('SUPERVISOR', 'ADMIN')
+          join public.roles r on r.id = u.role_id
+          where u.id = auth.uid() and r.name in ('SUPERVISOR', 'ADMIN')
         ))
     )
   );
