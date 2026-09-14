@@ -59,6 +59,36 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
     const pathname = url.pathname;
 
     try {
+      // 1b. Route: Root / Service Overview
+      if (req.method === 'GET' && (pathname === '/' || pathname === '/api' || pathname === '/api/v1')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify(
+            {
+              success: true,
+              service: 'LM-Vision AI Engine Backend',
+              status: 'OPERATIONAL',
+              version: '1.0.0',
+              provider: 'GEMINI',
+              endpoints: {
+                health: '/api/v1/ai/health',
+                routerHealth: '/api/v1/ai/health/ai',
+                packageAnalysis: 'POST /api/v1/ai/package-analysis',
+                explainFinding: 'POST /api/v1/ai/explain-finding',
+                inspections: '/api/v1/inspections',
+                rules: '/api/v1/rules',
+                reports: '/api/v1/reports',
+                sync: 'POST /api/v1/dashboard/sync',
+              },
+              timestamp: new Date().toISOString(),
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+
       // 2. Route: Health Check
       if (req.method === 'GET' && (pathname === '/health' || pathname === '/api/v1/ai/health')) {
         const preferred = (url.searchParams.get('provider')?.toUpperCase() as any) || undefined;
