@@ -52,16 +52,30 @@ export class ProviderRouter {
   private readonly failoverHistory: AIFailoverEvent[] = [];
 
   constructor(options?: ProviderRouterOptions) {
-    const totalTimeout = Number(process.env['AI_TOTAL_TIMEOUT_MS'] || 25000);
-    const geminiTimeout = Number(process.env['GEMINI_TIMEOUT_MS'] || 7000);
+    const totalTimeout = Number(process.env['AI_TOTAL_TIMEOUT_MS'] || 30000);
+    const geminiTimeout = Number(process.env['GEMINI_TIMEOUT_MS'] || 25000);
     const grokTimeout = Number(process.env['GROK_TIMEOUT_MS'] || 7000);
 
-    const safeTotalTimeout = isNaN(totalTimeout) || totalTimeout < 10000 ? 25000 : totalTimeout;
-    const safeGeminiTimeout = isNaN(geminiTimeout) || geminiTimeout <= 0 ? 7000 : Math.min(geminiTimeout, 10000);
+    const safeTotalTimeout = isNaN(totalTimeout) || totalTimeout < 10000 ? 30000 : totalTimeout;
+    const safeGeminiTimeout = isNaN(geminiTimeout) || geminiTimeout <= 0 ? 25000 : geminiTimeout;
     const safeGrokTimeout = isNaN(grokTimeout) || grokTimeout <= 0 ? 7000 : grokTimeout;
 
+    // Default routing order:
+    // If Grok mock/instance is explicitly provided via options, or if a valid xAI API key is configured and AI_PROVIDERS !== 'GEMINI':
+    const defaultOrder: AIProviderName[] = ['GEMINI'];
+    const hasGrokKey = Boolean(
+      options?.grokProvider ||
+      (process.env['XAI_API_KEY'] &&
+       !process.env['XAI_API_KEY'].includes('placeholder') &&
+       process.env['XAI_API_KEY'].startsWith('xai-'))
+    );
+
+    if (hasGrokKey && process.env['AI_PROVIDERS'] !== 'GEMINI') {
+      defaultOrder.push('GROK');
+    }
+
     this.config = {
-      order: options?.config?.order || ['GEMINI', 'GROK'],
+      order: options?.config?.order || defaultOrder,
       totalTimeoutMs: options?.config?.totalTimeoutMs ?? safeTotalTimeout,
       geminiTimeoutMs: options?.config?.geminiTimeoutMs ?? safeGeminiTimeout,
       grokTimeoutMs: options?.config?.grokTimeoutMs ?? safeGrokTimeout,
@@ -248,9 +262,9 @@ export class ProviderRouter {
     const provider = providerName === 'GROK' ? this.grokProvider : this.geminiProvider;
     const providerTimeout =
       providerName === 'GROK' ? this.config.grokTimeoutMs : this.config.geminiTimeoutMs;
-    // When executing Gemini, reserve budget for Grok so Gemini timeout never starves Grok
+    // When executing Gemini, reserve budget for Grok only if Grok is in the active sequence
     const effectiveTimeout =
-      providerName === 'GEMINI' && remainingBudgetMs > this.config.grokTimeoutMs
+      providerName === 'GEMINI' && this.config.order.includes('GROK') && remainingBudgetMs > this.config.grokTimeoutMs
         ? Math.min(providerTimeout, Math.max(3000, remainingBudgetMs - this.config.grokTimeoutMs))
         : providerTimeout;
     const allocatedBudget = Math.min(effectiveTimeout, remainingBudgetMs);

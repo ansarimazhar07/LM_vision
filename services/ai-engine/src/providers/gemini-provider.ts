@@ -28,6 +28,7 @@ import {
 
 export interface GeminiProviderOptions {
   apiKey?: string;
+  apiKeys?: string[];
   modelName?: string;
   timeoutMs?: number;
   maxRetries?: number;
@@ -60,17 +61,36 @@ export class GeminiProvider implements AIProvider {
   public readonly name = 'GEMINI' as const;
   public readonly modelName: string;
   public readonly defaultModel: string;
+  public readonly apiKeys: string[] = [];
+  private activeKeyIndex = 0;
   private readonly apiKey?: string;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly enableCache: boolean;
-  private readonly client?: GoogleGenAI;
+  private client?: GoogleGenAI;
+  private readonly customGenAIClient?: any;
   private readonly cache = new Map<string, CacheEntry>();
 
   constructor(options?: GeminiProviderOptions) {
-    this.apiKey =
-      options?.apiKey ??
-      (typeof process !== 'undefined' ? process.env?.['GEMINI_API_KEY'] : undefined);
+    const envKeys: string[] = [];
+    if (typeof process !== 'undefined') {
+      if (process.env?.['GEMINI_API_KEYS']) {
+        envKeys.push(...process.env['GEMINI_API_KEYS'].split(',').map((k) => k.trim()));
+      }
+      if (process.env?.['GEMINI_API_KEY_1']) envKeys.push(process.env['GEMINI_API_KEY_1'].trim());
+      if (process.env?.['GEMINI_API_KEY_2']) envKeys.push(process.env['GEMINI_API_KEY_2'].trim());
+      if (process.env?.['GEMINI_API_KEY_3']) envKeys.push(process.env['GEMINI_API_KEY_3'].trim());
+      if (process.env?.['GEMINI_API_KEY']) envKeys.push(process.env['GEMINI_API_KEY'].trim());
+    }
+
+    if (options?.apiKeys && options.apiKeys.length > 0) {
+      envKeys.unshift(...options.apiKeys.map((k) => k.trim()));
+    } else if (options?.apiKey) {
+      envKeys.unshift(options.apiKey.trim());
+    }
+
+    this.apiKeys = Array.from(new Set(envKeys.filter((k) => k.length > 0 && !k.includes('placeholder'))));
+    this.apiKey = this.apiKeys[0] || options?.apiKey;
 
     const configuredModel =
       options?.modelName ??
@@ -86,8 +106,12 @@ export class GeminiProvider implements AIProvider {
     }
 
     let model = configuredModel.trim();
-    if (model === 'gemini-1.5-flash') {
-      console.warn(`[GeminiProvider] '${model}' is retired or deprecated on Google API v1beta. Upgrading to 'gemini-3.6-flash'.`);
+    if (
+      model === 'gemini-1.5-flash' ||
+      model === 'gemini-3.5-flash' ||
+      model === 'gemini-3-flash'
+    ) {
+      console.warn(`[GeminiProvider] '${model}' has high demand or is deprecated on Google API v1beta. Upgrading to active 'gemini-3.6-flash'.`);
       model = 'gemini-3.6-flash';
     }
 
@@ -99,15 +123,25 @@ export class GeminiProvider implements AIProvider {
         ? Number(process.env['GEMINI_TIMEOUT_MS'])
         : undefined;
     this.timeoutMs =
-      options?.timeoutMs ?? (envTimeout && !isNaN(envTimeout) && envTimeout > 0 ? envTimeout : 7000);
+      options?.timeoutMs ?? (envTimeout && !isNaN(envTimeout) && envTimeout > 0 ? envTimeout : 25000);
     this.maxRetries = options?.maxRetries ?? 1;
     this.enableCache = options?.enableCache ?? true;
 
     if (options?.genAIClient) {
       this.client = options.genAIClient;
+      this.customGenAIClient = options.genAIClient;
     } else if (this.apiKey) {
       this.client = new GoogleGenAI({ apiKey: this.apiKey });
     }
+  }
+
+  public rotateApiKey(): boolean {
+    if (this.customGenAIClient || this.apiKeys.length <= 1) return false;
+    this.activeKeyIndex = (this.activeKeyIndex + 1) % this.apiKeys.length;
+    const nextKey = this.apiKeys[this.activeKeyIndex]!;
+    this.client = new GoogleGenAI({ apiKey: nextKey });
+    console.log(`[GeminiProvider] Rotated to alternate Gemini API key (index ${this.activeKeyIndex}/${this.apiKeys.length})`);
+    return true;
   }
 
   /**
@@ -396,12 +430,21 @@ export class GeminiProvider implements AIProvider {
       console.log(`[GeminiProvider] Google Gemini responded in ${Date.now() - callStart}ms!`);
     } catch (apiErr: any) {
       const errMsg = String(apiErr?.message || apiErr);
+      const isRecoverableError =
+        errMsg.includes('not found') ||
+        errMsg.includes('no longer available') ||
+        errMsg.includes('404') ||
+        errMsg.includes('503') ||
+        errMsg.includes('high demand') ||
+        errMsg.includes('UNAVAILABLE') ||
+        errMsg.includes('timed out');
+
       if (
-        (errMsg.includes('not found') || errMsg.includes('no longer available') || errMsg.includes('404')) &&
+        isRecoverableError &&
         this.modelName !== 'gemini-3.6-flash' &&
         this.client?.models
       ) {
-        console.warn(`[GeminiProvider] Model '${this.modelName}' returned 404/not available. Retrying with active model 'gemini-3.6-flash'...`);
+        console.warn(`[GeminiProvider] Model '${this.modelName}' failed (${errMsg.slice(0, 100)}). Retrying with active model 'gemini-3.6-flash'...`);
         try {
           const fallbackPromise = this.client.models.generateContent({
             model: 'gemini-3.6-flash',
@@ -667,6 +710,11 @@ export class GeminiProvider implements AIProvider {
           err?.status === 429 ||
           err?.message?.includes('429') ||
           err?.message?.includes('RESOURCE_EXHAUSTED');
+
+        if (isRateLimit && this.rotateApiKey()) {
+          console.warn(`[GeminiProvider] Rate limit hit. Rotated to alternate Gemini API key and retrying...`);
+          continue;
+        }
 
         // Requirement 10 & 29: 503 / high demand must trigger IMMEDIATE failover without retries
         const isHighDemandOrUnavailable =

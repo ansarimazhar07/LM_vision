@@ -29,11 +29,11 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.6-flash
-      - key: XAI_MODEL
-        value: grok-4.20-non-reasoning
+      - key: AI_PROVIDERS
+        value: GEMINI
       - key: AI_TOTAL_TIMEOUT_MS
-        value: "25000"
+        value: "30000"
       - key: GEMINI_TIMEOUT_MS
-        value: "7000"
+        value: "25000"
       - key: GROK_TIMEOUT_MS
         value: "7000"
