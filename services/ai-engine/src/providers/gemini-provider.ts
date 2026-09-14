@@ -93,8 +93,8 @@ export class GeminiProvider implements AIProvider {
         ? Number(process.env['GEMINI_TIMEOUT_MS'])
         : undefined;
     this.timeoutMs =
-      options?.timeoutMs ?? (envTimeout && !isNaN(envTimeout) && envTimeout > 0 ? envTimeout : 60000);
-    this.maxRetries = options?.maxRetries ?? 2;
+      options?.timeoutMs ?? (envTimeout && !isNaN(envTimeout) && envTimeout > 0 ? envTimeout : 7000);
+    this.maxRetries = options?.maxRetries ?? 1;
     this.enableCache = options?.enableCache ?? true;
 
     if (options?.genAIClient) {
@@ -635,6 +635,21 @@ export class GeminiProvider implements AIProvider {
           err?.status === 429 ||
           err?.message?.includes('429') ||
           err?.message?.includes('RESOURCE_EXHAUSTED');
+
+        // Requirement 10 & 29: 503 / high demand must trigger IMMEDIATE failover without retries
+        const isHighDemandOrUnavailable =
+          err?.status === 503 ||
+          err?.statusCode === 503 ||
+          err?.code === 503 ||
+          err?.status === 'UNAVAILABLE' ||
+          err?.message?.includes('high demand') ||
+          err?.message?.includes('UNAVAILABLE') ||
+          err?.message?.includes('503');
+
+        if (isHighDemandOrUnavailable) {
+          break;
+        }
+
         const isServerTransient =
           err?.status >= 500 || err?.code === 'ECONNRESET' || err?.code === 'ETIMEDOUT';
 
@@ -653,6 +668,20 @@ export class GeminiProvider implements AIProvider {
     const cleanMessage = errMessage
       .replace(/key=[^&\s]+/gi, 'key=***')
       .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer ***');
+
+    if (
+      (lastError as any)?.status === 503 ||
+      (lastError as any)?.statusCode === 503 ||
+      cleanMessage.includes('high demand') ||
+      cleanMessage.includes('UNAVAILABLE') ||
+      cleanMessage.includes('503')
+    ) {
+      throw new AppError({
+        code: 'AI_PROVIDER_ERROR',
+        message: cleanMessage,
+        statusCode: 503,
+      });
+    }
 
     if ((lastError as any)?.status === 429 || cleanMessage.includes('RESOURCE_EXHAUSTED')) {
       throw new AppError({

@@ -30,7 +30,7 @@ services:
       - key: XAI_MODEL
         value: grok-2-vision-1212
       - key: AI_TOTAL_TIMEOUT_MS
-        value: "15000"
+        value: "25000"
       - key: GEMINI_TIMEOUT_MS
         value: "7000"
       - key: GROK_TIMEOUT_MS

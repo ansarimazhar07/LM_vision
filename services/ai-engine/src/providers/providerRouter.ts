@@ -52,15 +52,19 @@ export class ProviderRouter {
   private readonly failoverHistory: AIFailoverEvent[] = [];
 
   constructor(options?: ProviderRouterOptions) {
-    const totalTimeout = Number(process.env['AI_TOTAL_TIMEOUT_MS'] || 15000);
+    const totalTimeout = Number(process.env['AI_TOTAL_TIMEOUT_MS'] || 25000);
     const geminiTimeout = Number(process.env['GEMINI_TIMEOUT_MS'] || 7000);
     const grokTimeout = Number(process.env['GROK_TIMEOUT_MS'] || 7000);
 
+    const safeTotalTimeout = isNaN(totalTimeout) || totalTimeout < 10000 ? 25000 : totalTimeout;
+    const safeGeminiTimeout = isNaN(geminiTimeout) || geminiTimeout <= 0 ? 7000 : Math.min(geminiTimeout, 10000);
+    const safeGrokTimeout = isNaN(grokTimeout) || grokTimeout <= 0 ? 7000 : grokTimeout;
+
     this.config = {
       order: options?.config?.order || ['GEMINI', 'GROK'],
-      totalTimeoutMs: options?.config?.totalTimeoutMs ?? (isNaN(totalTimeout) ? 15000 : totalTimeout),
-      geminiTimeoutMs: options?.config?.geminiTimeoutMs ?? (isNaN(geminiTimeout) ? 7000 : geminiTimeout),
-      grokTimeoutMs: options?.config?.grokTimeoutMs ?? (isNaN(grokTimeout) ? 7000 : grokTimeout),
+      totalTimeoutMs: options?.config?.totalTimeoutMs ?? safeTotalTimeout,
+      geminiTimeoutMs: options?.config?.geminiTimeoutMs ?? safeGeminiTimeout,
+      grokTimeoutMs: options?.config?.grokTimeoutMs ?? safeGrokTimeout,
       maxRetries: options?.config?.maxRetries ?? 1,
       circuitBreakerFailureThreshold: options?.config?.circuitBreakerFailureThreshold ?? 3,
       circuitBreakerCooldownMs: options?.config?.circuitBreakerCooldownMs ?? 30000,
@@ -244,7 +248,12 @@ export class ProviderRouter {
     const provider = providerName === 'GROK' ? this.grokProvider : this.geminiProvider;
     const providerTimeout =
       providerName === 'GROK' ? this.config.grokTimeoutMs : this.config.geminiTimeoutMs;
-    const allocatedBudget = Math.min(providerTimeout, remainingBudgetMs);
+    // When executing Gemini, reserve budget for Grok so Gemini timeout never starves Grok
+    const effectiveTimeout =
+      providerName === 'GEMINI' && remainingBudgetMs > this.config.grokTimeoutMs
+        ? Math.min(providerTimeout, Math.max(3000, remainingBudgetMs - this.config.grokTimeoutMs))
+        : providerTimeout;
+    const allocatedBudget = Math.min(effectiveTimeout, remainingBudgetMs);
 
     let attempt = 0;
     const maxAttempts = this.config.maxRetries + 1; // e.g. 1 retry = 2 attempts total
