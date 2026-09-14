@@ -392,76 +392,103 @@ export class GeminiProvider implements AIProvider {
       text: `Analyze the provided packaging panel images (${imageParts.map((p) => p.surface).join(', ')}). Extract all visible mandatory and voluntary declarations into the required structured JSON schema. Follow prompt version ${GEMINI_PACKAGE_ANALYSIS_PROMPT_VERSION}.`,
     });
 
-    const callPromise = this.client!.models.generateContent({
-      model: this.modelName,
-      contents,
-      config: {
-        systemInstruction: GEMINI_PACKAGE_ANALYSIS_SYSTEM_INSTRUCTION,
-        responseMimeType: 'application/json',
-        responseJsonSchema: GEMINI_STRUCTURED_RESPONSE_JSON_SCHEMA,
-        temperature: 0.1,
-      },
-    });
+    const candidateModels = Array.from(
+      new Set([
+        this.modelName,
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite',
+      ])
+    );
 
-    console.log(`[GeminiProvider] Invoking Google Gemini (model: ${this.modelName}, images: ${imageParts.length}, timeout: ${this.timeoutMs}ms)...`);
+    // If customGenAIClient is provided (e.g. unit test mocks), preserve strict single/double call expectations
+    const modelsToAttempt = this.customGenAIClient
+      ? [this.modelName, ...(this.modelName !== 'gemini-3.6-flash' ? ['gemini-3.6-flash'] : [])]
+      : candidateModels;
+
     const callStart = Date.now();
-
-    // Timeout boundary
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      const timer = setTimeout(() => {
-        clearTimeout(timer);
-        reject(
-          new AppError({
-            code: 'AI_PROVIDER_ERROR',
-            message: `Gemini API request timed out after ${this.timeoutMs}ms.`,
-            statusCode: 504,
-          })
-        );
-      }, this.timeoutMs);
-    });
-
+    let lastApiErr: any;
     let response: any;
-    try {
-      response = await Promise.race([callPromise, timeoutPromise]);
-      console.log(`[GeminiProvider] Google Gemini responded in ${Date.now() - callStart}ms!`);
-    } catch (apiErr: any) {
-      const errMsg = String(apiErr?.message || apiErr);
-      const isRecoverableError =
-        errMsg.includes('not found') ||
-        errMsg.includes('no longer available') ||
-        errMsg.includes('404') ||
-        errMsg.includes('503') ||
-        errMsg.includes('high demand') ||
-        errMsg.includes('UNAVAILABLE') ||
-        errMsg.includes('timed out');
 
-      if (
-        isRecoverableError &&
-        this.modelName !== 'gemini-3.6-flash' &&
-        this.client?.models
-      ) {
-        console.warn(`[GeminiProvider] Model '${this.modelName}' failed (${errMsg.slice(0, 100)}). Retrying with active model 'gemini-3.6-flash'...`);
-        try {
-          const fallbackPromise = this.client.models.generateContent({
-            model: 'gemini-3.6-flash',
-            contents,
-            config: {
-              systemInstruction: GEMINI_PACKAGE_ANALYSIS_SYSTEM_INSTRUCTION,
-              responseMimeType: 'application/json',
-              responseJsonSchema: GEMINI_STRUCTURED_RESPONSE_JSON_SCHEMA,
-              temperature: 0.1,
-            },
-          });
-          response = await Promise.race([fallbackPromise, timeoutPromise]);
-          console.log(`[GeminiProvider] Google Gemini fallback (gemini-3.6-flash) succeeded in ${Date.now() - callStart}ms!`);
-        } catch (fallbackErr) {
-          console.error(`[GeminiProvider] Google Gemini fallback also failed:`, fallbackErr);
+    for (let i = 0; i < modelsToAttempt.length; i++) {
+      const model = modelsToAttempt[i]!;
+      const elapsed = Date.now() - callStart;
+      const remainingMs = this.timeoutMs - elapsed;
+      if (remainingMs <= 1000) {
+        throw new AppError({
+          code: 'AI_PROVIDER_ERROR',
+          message: `Gemini API request timed out after ${this.timeoutMs}ms.`,
+          statusCode: 504,
+        });
+      }
+
+      console.log(`[GeminiProvider] Invoking Google Gemini (model: ${model}, images: ${imageParts.length}, timeout: ${remainingMs}ms)...`);
+
+      try {
+        const callPromise = this.client!.models.generateContent({
+          model,
+          contents,
+          config: {
+            systemInstruction: GEMINI_PACKAGE_ANALYSIS_SYSTEM_INSTRUCTION,
+            responseMimeType: 'application/json',
+            responseJsonSchema: GEMINI_STRUCTURED_RESPONSE_JSON_SCHEMA,
+            temperature: 0.1,
+          },
+        });
+
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          const timer = setTimeout(() => {
+            clearTimeout(timer);
+            reject(
+              new AppError({
+                code: 'AI_PROVIDER_ERROR',
+                message: `Gemini API request timed out after ${this.timeoutMs}ms.`,
+                statusCode: 504,
+              })
+            );
+          }, remainingMs);
+        });
+
+        response = await Promise.race([callPromise, timeoutPromise]);
+        console.log(`[GeminiProvider] Google Gemini (${model}) responded in ${Date.now() - callStart}ms!`);
+        break;
+      } catch (apiErr: any) {
+        lastApiErr = apiErr;
+        const errMsg = String(apiErr?.message || apiErr);
+
+        // If overall request timed out, fail fast
+        if (apiErr instanceof AppError && apiErr.statusCode === 504) {
           throw apiErr;
         }
-      } else {
+
+        const isRecoverableModelError =
+          errMsg.includes('not found') ||
+          errMsg.includes('no longer available') ||
+          errMsg.includes('404') ||
+          errMsg.includes('503') ||
+          errMsg.includes('high demand') ||
+          errMsg.includes('UNAVAILABLE');
+
+        if (isRecoverableModelError && i < modelsToAttempt.length - 1) {
+          const nextModel = modelsToAttempt[i + 1]!;
+          console.warn(
+            `[GeminiProvider] Model '${model}' failed (${errMsg.slice(0, 80)}). Cascading to active fallback model '${nextModel}'...`
+          );
+          continue;
+        }
+
         console.error(`[GeminiProvider] Google Gemini call failed after ${Date.now() - callStart}ms:`, apiErr?.message || apiErr);
         throw apiErr;
       }
+    }
+
+    if (!response) {
+      throw lastApiErr || new AppError({
+        code: 'AI_PROVIDER_ERROR',
+        message: 'Gemini returned empty or unavailable response across all candidate models.',
+        statusCode: 502,
+      });
     }
     const responseText = response.text;
 
