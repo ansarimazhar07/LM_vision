@@ -85,7 +85,13 @@ export class GeminiProvider implements AIProvider {
       });
     }
 
-    this.modelName = configuredModel.trim();
+    let model = configuredModel.trim();
+    if (model === 'gemini-3.5-flash' || model === 'gemini-3-flash') {
+      console.warn(`[GeminiProvider] '${model}' is not an official Google Gemini model. Normalizing to 'gemini-1.5-flash'.`);
+      model = 'gemini-1.5-flash';
+    }
+
+    this.modelName = model;
     this.defaultModel = this.modelName;
 
     const envTimeout =
