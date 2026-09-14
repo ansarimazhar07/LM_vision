@@ -2,8 +2,12 @@ import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { COLOR_TOKENS } from '@lm-vision/ui';
-import { computeAssessmentScore } from '@lm-vision/rules';
+import {
+  analyzeEvidenceCompleteness,
+  calculateInspectionQualityScore,
+} from '@lm-vision/perception';
 import type { ComplianceResult } from '@lm-vision/shared-types';
+
 import type { RootStackParamList } from '../navigation/types';
 import { useInspectionWorkflow } from '../state/InspectionWorkflowProvider';
 import { Screen } from '../components/Screen';
@@ -44,12 +48,28 @@ export function InspectionResultScreen({ navigation }: Props): React.JSX.Element
   const summary = draft?.complianceSummary;
   const aiScore = draft?.aiAnalysis?.quality?.overallScore ?? 0.93;
 
-  const scoreBreakdown = useMemo(() => {
-    return computeAssessmentScore({
+  const completeness = useMemo(() => {
+    return analyzeEvidenceCompleteness({
+      images: draft?.images,
+      declarations,
       assessments,
-      packageAnalysis: draft?.aiAnalysis,
+      fusedPackage: (draft?.aiAnalysis as any)?.rawResponse?.phaseD,
+      commodityCategory: draft?.category,
     });
-  }, [assessments, draft?.aiAnalysis]);
+  }, [draft?.images, declarations, assessments, draft?.aiAnalysis, draft?.category]);
+
+  const evidenceQualityScore = useMemo(() => {
+    return calculateInspectionQualityScore({
+      completeness,
+      imageQuality: draft?.aiAnalysis?.quality,
+      fusedPackage: (draft?.aiAnalysis as any)?.rawResponse?.phaseD,
+      reviewsCount: draft?.reviews?.length,
+      totalAssessmentsCount: assessments.length,
+      imagesCount: draft?.images?.length,
+      boundingBoxesCount: declarations.filter((d) => Boolean(d.region?.boundingBox)).length,
+    });
+  }, [completeness, draft?.aiAnalysis, draft?.reviews?.length, assessments.length, draft?.images?.length, declarations]);
+
 
   const isLocal = isLocalOnlyMode() || draft?.aiAnalysis?.provider === 'LOCAL_OCR';
   const isGemini = !isLocal && draft?.aiAnalysis?.provider === 'GEMINI';
@@ -119,39 +139,112 @@ export function InspectionResultScreen({ navigation }: Props): React.JSX.Element
           </Surface>
         )}
 
-        {/* LM-Vision Assessment Score (Non-Statutory Operational Guidance) */}
+        {/* LM-Vision Inspection Evidence Quality Score (Non-Statutory Operational Heuristic) */}
         <Surface style={styles.scoreCard}>
           <View style={styles.scoreHeader}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.scoreEyebrow}>NON-STATUTORY OPERATIONAL SUMMARY</Text>
-              <Text style={styles.scoreTitle}>LM-Vision Assessment Score</Text>
+              <Text style={styles.scoreEyebrow}>NON-STATUTORY OPERATIONAL GUIDANCE</Text>
+              <Text style={styles.scoreTitle}>INSPECTION EVIDENCE QUALITY SCORE — NON-STATUTORY</Text>
+              <Text style={styles.scoreRating}>
+                Rating: <Text style={{ fontWeight: '800', color: '#0284c7' }}>{evidenceQualityScore.rating}</Text>
+              </Text>
             </View>
             <View style={styles.scoreBadge}>
-              <Text style={styles.scoreNumber}>{scoreBreakdown.overallScore}</Text>
+              <Text style={styles.scoreNumber}>{evidenceQualityScore.totalScore}</Text>
               <Text style={styles.scoreMax}>/100</Text>
             </View>
           </View>
 
+          {/* Deterministic 30/20/20/15/15 Product-Defined Breakdown */}
           <View style={styles.scoreBreakdownGrid}>
             <View style={styles.scoreSubItem}>
-              <Text style={styles.scoreSubLabel}>Mandatory Rules</Text>
-              <Text style={styles.scoreSubVal}>{scoreBreakdown.mandatoryDeclarationsScore}%</Text>
+              <Text style={styles.scoreSubLabel}>Decl. Completeness (30%)</Text>
+              <Text style={styles.scoreSubVal}>
+                {evidenceQualityScore.completenessPoints}/30 pts
+              </Text>
             </View>
             <View style={styles.scoreSubItem}>
-              <Text style={styles.scoreSubLabel}>MRP Compliance</Text>
-              <Text style={styles.scoreSubVal}>{scoreBreakdown.mrpComplianceScore}%</Text>
+              <Text style={styles.scoreSubLabel}>OCR Resolution (20%)</Text>
+              <Text style={styles.scoreSubVal}>
+                {evidenceQualityScore.imageQualityPoints}/20 pts
+              </Text>
             </View>
             <View style={styles.scoreSubItem}>
-              <Text style={styles.scoreSubLabel}>Net Quantity</Text>
-              <Text style={styles.scoreSubVal}>{scoreBreakdown.netQuantityComplianceScore}%</Text>
+              <Text style={styles.scoreSubLabel}>Multi-Angle (20%)</Text>
+              <Text style={styles.scoreSubVal}>
+                {evidenceQualityScore.traceabilityPoints}/20 pts
+              </Text>
             </View>
             <View style={styles.scoreSubItem}>
-              <Text style={styles.scoreSubLabel}>Evidence Quality</Text>
-              <Text style={styles.scoreSubVal}>{scoreBreakdown.evidenceSufficiencyScore}%</Text>
+              <Text style={styles.scoreSubLabel}>Conflict Resolution (15%)</Text>
+              <Text style={styles.scoreSubVal}>
+                {evidenceQualityScore.conflictResolutionPoints}/15 pts
+              </Text>
+            </View>
+            <View style={[styles.scoreSubItem, { width: '100%' }]}>
+              <Text style={styles.scoreSubLabel}>Review Completion (15%)</Text>
+              <Text style={styles.scoreSubVal}>
+                {evidenceQualityScore.reviewCompletionPoints}/15 pts
+              </Text>
             </View>
           </View>
 
-          <Text style={styles.scoreDisclaimer}>{scoreBreakdown.disclaimer}</Text>
+          <Text style={styles.scoreDisclaimer}>{evidenceQualityScore.formulaDescription}</Text>
+        </Surface>
+
+        {/* Evidence Completeness Status (Statutory Applicability vs Captured Evidence) */}
+        <Surface style={styles.completenessCard}>
+          <View style={styles.completenessHeader}>
+            <Text style={styles.completenessTitle}>Evidence Completeness vs Statutory Applicability</Text>
+            <Badge
+              label={`${completeness.overallStatus} EVIDENCE`}
+              bg="#e0f2fe"
+              color="#0369a1"
+              size="sm"
+            />
+          </View>
+          <Text style={styles.completenessSubtitle}>
+            Distinguishes available evidence from statutory applicability. Missing evidence is not an automatic violation.
+          </Text>
+
+          <View style={styles.completenessGrid}>
+            {completeness.items.slice(0, 6).map((item) => {
+              const bg =
+                item.presenceStatus === 'AVAILABLE'
+                  ? '#f0fdf4'
+                  : item.presenceStatus === 'MISSING_EVIDENCE'
+                  ? '#fffbeb'
+                  : item.presenceStatus === 'NOT_APPLICABLE'
+                  ? '#f1f5f9'
+                  : '#f8fafc';
+              const color =
+                item.presenceStatus === 'AVAILABLE'
+                  ? '#16a34a'
+                  : item.presenceStatus === 'MISSING_EVIDENCE'
+                  ? '#d97706'
+                  : item.presenceStatus === 'NOT_APPLICABLE'
+                  ? '#64748b'
+                  : '#475569';
+              return (
+                <View key={item.category} style={[styles.completenessPill, { backgroundColor: bg }]}>
+                  <Text style={styles.completenessPillLabel}>{item.category.replace(/_/g, ' ')}</Text>
+                  <Text style={[styles.completenessPillStatus, { color }]}>{item.presenceStatus}</Text>
+                </View>
+              );
+            })}
+          </View>
+
+          {/* Advisory Capture Recommendations (Evidence-Driven Only) */}
+          {completeness.smartRecommendations.length > 0 && (
+            <View style={styles.recBox}>
+              <Text style={styles.recTitle}>Advisory Capture Recommendations (Optional)</Text>
+              {completeness.smartRecommendations.map((rec) => (
+                <Text key={rec.id} style={styles.recItem}>
+                  • {rec.advisoryGuidance}
+                </Text>
+              ))}
+            </View>
+          )}
         </Surface>
 
         {/* SECTION 1: DETERMINISTIC LEGAL METROLOGY COMPLIANCE ENGINE */}
@@ -339,6 +432,30 @@ export function InspectionResultScreen({ navigation }: Props): React.JSX.Element
             <View style={styles.linkRow}>
               <Text style={[styles.linkText, { color: '#2563eb', fontWeight: '700' }]}>
                 Open Visual Evidence Heatmap →
+              </Text>
+            </View>
+          </Pressable>
+        </Surface>
+
+        {/* Phase E: Package-to-Package Comparison Card */}
+        <Surface style={styles.navCard}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => navigation.navigate('PackageComparison')}
+            style={styles.cardPressable}
+          >
+            <View style={styles.cardHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>Package-to-Package Comparison</Text>
+                <Text style={styles.cardDesc}>
+                  Validate product identity comparability (SKU, brand, size) and analyze observational variance
+                </Text>
+              </View>
+              <Badge label="PHASE E" bg="#ecfdf5" color="#047857" size="sm" />
+            </View>
+            <View style={styles.linkRow}>
+              <Text style={[styles.linkText, { color: '#047857', fontWeight: '700' }]}>
+                Open Package Comparison Workspace →
               </Text>
             </View>
           </Pressable>
@@ -732,6 +849,87 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontStyle: 'italic',
     lineHeight: 14,
+  },
+  scoreRating: {
+    fontSize: 12,
+    color: '#334155',
+    marginTop: 3,
+  },
+  completenessCard: {
+    padding: 16,
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    borderColor: '#e2e8f0',
+    borderWidth: 1,
+    marginBottom: 14,
+  },
+  completenessHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  completenessTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0f172a',
+    flex: 1,
+    marginRight: 8,
+  },
+  completenessSubtitle: {
+    fontSize: 11,
+    color: '#64748b',
+    lineHeight: 15,
+    marginBottom: 12,
+  },
+  completenessGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  completenessPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  completenessPillLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#334155',
+    textTransform: 'capitalize',
+  },
+  completenessPillStatus: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  recBox: {
+    marginTop: 6,
+    padding: 10,
+    backgroundColor: '#f8fafc',
+    borderRadius: 6,
+    borderLeftWidth: 3,
+    borderLeftColor: '#0284c7',
+  },
+  recTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0369a1',
+    marginBottom: 4,
+  },
+  recItem: {
+    fontSize: 11,
+    color: '#334155',
+    lineHeight: 16,
+  },
+  recReason: {
+    color: '#64748b',
+    fontStyle: 'italic',
   },
   ruleItemLink: {
     marginTop: 6,

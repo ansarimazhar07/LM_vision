@@ -7,6 +7,20 @@
 
 import type { ImageQuality } from '@lm-vision/shared-types';
 
+export {
+  assessComprehensiveQuality,
+  computeLaplacianVariance,
+  analyzeLuminanceAndGlare,
+  DEFAULT_QUALITY_THRESHOLDS,
+  type ComprehensiveQualityAssessment,
+  type QualityStatus,
+  type ExposureClassification,
+  type GlareSeverity,
+  type GlareRegion,
+  type ImageQualityThresholds,
+  type LuminanceAnalysisResult,
+} from '../cv/imageQualityEngine.js';
+
 export interface ImageQualityInput {
   imageId: string;
   base64Data?: string;

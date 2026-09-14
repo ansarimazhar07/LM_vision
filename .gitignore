@@ -12,7 +12,8 @@ services/*/.env
 android/.gradle/
 android/app/build/
 android/build/
-ios/Pods/
+packages/*/dist/
+graphify-out/
 *.apk
 *.aab
 *.ipa

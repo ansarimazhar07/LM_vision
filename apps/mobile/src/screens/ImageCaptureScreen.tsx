@@ -19,8 +19,10 @@ import { generateUuid } from '../state/draft';
 import { Screen } from '../components/Screen';
 import { Button } from '../components/Button';
 import { useCameraLifecycle } from '../hooks/useCameraLifecycle';
+import { evaluateCameraGuidance } from '../utils/cameraGuidance';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CameraCapture' | 'SmartScan'>;
+
 
 // React 19 JSX typing bridge for CameraView
 const CameraComponent = CameraView as unknown as React.ComponentType<any>;
@@ -45,6 +47,7 @@ export function ImageCaptureScreen({ navigation }: Props): React.JSX.Element {
 
   const workflow = useInspectionWorkflow();
   const images = workflow.activeDraft?.images || [];
+  const guidance = evaluateCameraGuidance(null);
 
   useCameraLifecycle(useCallback(() => {
     setIsTorchOn(false);
@@ -237,6 +240,9 @@ export function ImageCaptureScreen({ navigation }: Props): React.JSX.Element {
 
         {/* Viewfinder Guideline Overlay */}
         <View style={styles.reticleContainer} pointerEvents="none">
+          <View style={styles.guidanceBanner}>
+            <Text style={styles.guidanceText}>💡 {guidance.primaryTip}</Text>
+          </View>
           <View style={styles.reticleBox}>
             <View style={[styles.corner, styles.cornerTL]} />
             <View style={[styles.corner, styles.cornerTR]} />
@@ -245,6 +251,7 @@ export function ImageCaptureScreen({ navigation }: Props): React.JSX.Element {
             <Text style={styles.reticleHint}>Align {selectedSurface} panel within frame</Text>
           </View>
         </View>
+
 
         {/* Bottom Bar: Thumbnails & Shutter & Gallery */}
         <View style={styles.bottomOverlay}>
@@ -575,4 +582,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  guidanceBanner: {
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    alignSelf: 'center',
+  },
+  guidanceText: {
+    color: '#e2e8f0',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
 });
+

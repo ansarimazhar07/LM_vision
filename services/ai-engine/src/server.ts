@@ -14,6 +14,7 @@ import {
   renderReportToJson,
   verifyReportIntegrity,
   type AssembleReportInput,
+  AUTHORITATIVE_GSR202E_RULES,
 } from '@lm-vision/rules';
 import { AIEngineGateway, createProductionGateway } from './gateway.js';
 import { generateReportPdf } from './reporting/pdfGenerator.js';
@@ -74,7 +75,24 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
         return;
       }
 
-      // 3. Route: Package Analysis
+      // 2b. Route: Provider Router Operational Health (No credentials)
+      if (
+        req.method === 'GET' &&
+        (pathname === '/health/ai' || pathname === '/api/v1/ai/health/ai' || pathname === '/api/v1/health/ai')
+      ) {
+        const healthSummary = aiGateway.getRouter().getHealthTracker().getOperationalHealthSummary();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: true,
+            data: healthSummary,
+            timestamp: new Date().toISOString(),
+          })
+        );
+        return;
+      }
+
+      // 3. Route: Package Analysis (with Gemini -> xAI Grok -> Cloud Unavailable failover)
       if (req.method === 'POST' && pathname === '/api/v1/ai/package-analysis') {
         console.log(`[LM-Vision AI Engine] Received POST /api/v1/ai/package-analysis from ${req.socket.remoteAddress}`);
         const rawBody = await readRequestBody(req, MAX_BODY_SIZE_BYTES);
@@ -104,10 +122,30 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
         const inputPayload: PackageAnalysisInput = inputValidation.data;
 
         // Server-Controlled Provider Determination:
-        // The client cannot inject arbitrary models or system instructions.
-        // The backend dispatches to the server-configured provider (default GEMINI, fallback MOCK).
+        // Dispatches through ProviderRouter (Gemini -> xAI Grok -> Cloud Unavailable).
         const requestedProvider = (url.searchParams.get('provider')?.toUpperCase() as any) || undefined;
-        const analysis = await aiGateway.analyzePackage(inputPayload, requestedProvider);
+        const routerResult = await aiGateway.routePackageAnalysis(inputPayload, requestedProvider);
+
+        if (routerResult.status === 'CLOUD_AI_UNAVAILABLE') {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              success: false,
+              code: 'CLOUD_AI_UNAVAILABLE',
+              message: 'Cloud AI providers (Gemini & Grok) unavailable. Continue with offline local analysis.',
+              metadata: {
+                status: 'CLOUD_AI_UNAVAILABLE',
+                cloudProvidersAttempted: routerResult.cloudProvidersAttempted,
+                fallbackFrom: routerResult.fallbackFrom,
+                latencyMs: routerResult.latencyMs,
+              },
+              timestamp: new Date().toISOString(),
+            })
+          );
+          return;
+        }
+
+        const analysis = routerResult.packageAnalysis!;
 
         // Record inspection in persistent store for real-time dashboard sync
         try {
@@ -121,6 +159,14 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
           JSON.stringify({
             success: true,
             data: analysis,
+            metadata: {
+              status: routerResult.status,
+              provider: routerResult.provider,
+              model: routerResult.model,
+              fallbackFrom: routerResult.fallbackFrom,
+              cloudProvidersAttempted: routerResult.cloudProvidersAttempted,
+              latencyMs: routerResult.latencyMs,
+            },
             timestamp: new Date().toISOString(),
           })
         );
@@ -379,7 +425,7 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
       }
 
       // 11. Route: Sync Draft from Mobile Client
-      if (req.method === 'POST' && (pathname === '/api/v1/inspections/sync' || pathname === '/api/v1/sync/draft')) {
+      if (req.method === 'POST' && (pathname === '/api/v1/inspections/sync' || pathname === '/api/v1/sync/draft' || pathname === '/api/v1/dashboard/sync')) {
         const rawBody = await readRequestBody(req, 10 * 1024 * 1024);
         let parsedJson: any;
         try {
@@ -387,9 +433,10 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
         } catch {
           throw new AppError({ code: 'VALIDATION_ERROR', message: 'Invalid JSON body in sync request.', statusCode: 400 });
         }
-        const synced = inspectionStore.saveDraft(parsedJson);
+        const draftData = parsedJson?.draft || parsedJson;
+        const synced = inspectionStore.saveDraft(draftData);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, data: synced, timestamp: new Date().toISOString() }));
+        res.end(JSON.stringify({ success: true, data: synced, savedCount: 1, timestamp: new Date().toISOString() }));
         return;
       }
 
@@ -398,6 +445,51 @@ export function createAiEngineServer(gateway?: AIEngineGateway): http.Server {
         const status = inspectionStore.getSyncStatus();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, data: status, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 12b. Route: Authoritative Statutory Rules
+      if (req.method === 'GET' && pathname === '/api/v1/rules') {
+        const rules = AUTHORITATIVE_GSR202E_RULES.map((r) => ({
+          ...r,
+          rule_number: r.ruleNumber,
+          rule_title: r.title,
+          id: r.ruleId,
+        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: rules, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 12c. Route: Reports List
+      if (req.method === 'GET' && pathname === '/api/v1/reports') {
+        const reports = inspectionStore.getAllReports();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: reports, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 12d. Route: Evidence List
+      if (req.method === 'GET' && pathname === '/api/v1/evidence') {
+        const evidence = inspectionStore.getAllEvidence();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: evidence, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 12e. Route: Audit Logs
+      if (req.method === 'GET' && pathname === '/api/v1/audit') {
+        const audits = inspectionStore.getAllAudits();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: audits, timestamp: new Date().toISOString() }));
+        return;
+      }
+
+      // 12f. Route: Inspectors Directory
+      if (req.method === 'GET' && pathname === '/api/v1/inspectors') {
+        const inspectors = inspectionStore.getAllInspectors();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: inspectors, timestamp: new Date().toISOString() }));
         return;
       }
 

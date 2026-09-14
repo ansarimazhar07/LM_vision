@@ -12,21 +12,48 @@ export const UserRoleSchema = z.enum([
 export type UserRole = z.infer<typeof UserRoleSchema>;
 
 // ============================================================================
-// Inspection Status Lifecycle
+// Inspection Status Lifecycle (Phase F Canonical Model)
 // ============================================================================
 export const InspectionStatusSchema = z.enum([
   'DRAFT',
+  'CAPTURING',
   'CAPTURED',
   'PROCESSING',
+  'ANALYZING',
   'ANALYZED',
   'REVIEW_REQUIRED',
+  'NEEDS_VERIFICATION',
   'READY_FOR_DECISION',
   'DECIDED',
+  'FINALIZED',
   'REPORT_GENERATED',
   'SYNCED',
+  'REOPENED',
+  'SUPERSEDED',
   'ARCHIVED',
 ]);
 export type InspectionStatus = z.infer<typeof InspectionStatusSchema>;
+
+/**
+ * Canonical Phase F Status Normalization:
+ * REVIEW_REQUIRED ≡ NEEDS_VERIFICATION
+ * DECIDED         ≡ FINALIZED
+ */
+export function normalizeInspectionStatus(status: string | undefined | null): InspectionStatus {
+  if (!status) return 'DRAFT';
+  const s = status.toUpperCase().trim();
+  if (s === 'REVIEW_REQUIRED') return 'NEEDS_VERIFICATION';
+  if (s === 'DECIDED') return 'FINALIZED';
+  if (s === 'CAPTURING') return 'CAPTURED';
+  if (s === 'PROCESSING' || s === 'ANALYZING') return 'ANALYZED';
+  return (InspectionStatusSchema.safeParse(s).success ? s : 'DRAFT') as InspectionStatus;
+}
+
+export function toLegacyInspectionStatus(status: InspectionStatus): string {
+  if (status === 'NEEDS_VERIFICATION') return 'REVIEW_REQUIRED';
+  if (status === 'FINALIZED') return 'DECIDED';
+  return status;
+}
 
 // ============================================================================
 // Finding Status (Evaluation Output)
@@ -103,6 +130,7 @@ export type AIConfidenceLevel = z.infer<typeof AIConfidenceLevelSchema>;
 export const AIProviderNameSchema = z.enum([
   'GEMINI',
   'OPENAI',
+  'GROK',
   'MOCK',
   'LOCAL_OCR',
   'HYBRID',
@@ -112,10 +140,18 @@ export type AIProviderName = z.infer<typeof AIProviderNameSchema>;
 export const PerceptionSourceSchema = z.enum([
   'LOCAL_OCR',
   'GEMINI',
+  'GROK',
   'HYBRID',
   'MOCK',
 ]);
 export type PerceptionSource = z.infer<typeof PerceptionSourceSchema>;
+
+export const CloudAIStatusSchema = z.enum([
+  'CLOUD_AI_SUCCESS',
+  'CLOUD_AI_PARTIAL',
+  'CLOUD_AI_UNAVAILABLE',
+]);
+export type CloudAIStatus = z.infer<typeof CloudAIStatusSchema>;
 
 // ============================================================================
 // Analysis Processing Status
@@ -320,12 +356,13 @@ export const PackagingTypeSchema = z.enum([
   'BLISTER_PACK',
   'CARTON',
   'TUBE',
+  'SACHET',
   'OTHER',
 ]);
 export type PackagingType = z.infer<typeof PackagingTypeSchema>;
 
 // ============================================================================
-// Image Surface / Angles
+// Image Surface / Angles / Dispersed Package Locations
 // ============================================================================
 export const PackageSurfaceSchema = z.enum([
   'FRONT',
@@ -334,11 +371,44 @@ export const PackageSurfaceSchema = z.enum([
   'BOTTOM',
   'LEFT',
   'RIGHT',
+  'LEFT_SIDE',
+  'RIGHT_SIDE',
+  'NECK',
+  'SHOULDER',
+  'CAP',
+  'LID',
+  'TOP_SEAL',
+  'BOTTOM_SEAL',
+  'CRIMP',
+  'EDGE',
+  'FLAP',
+  'STAMPED_AREA',
+  'LASER_MARK',
+  'STICKER',
   'NUTRITION_PANEL',
   'BARCODE_PANEL',
+  'OTHER',
   'UNKNOWN',
 ]);
 export type PackageSurface = z.infer<typeof PackageSurfaceSchema>;
+
+/**
+ * Dispersed/Remote Evidence Surface Type (aliased to PackageSurface for complete unification)
+ */
+export const EvidenceSurfaceTypeSchema = PackageSurfaceSchema;
+export type EvidenceSurfaceType = PackageSurface;
+
+// ============================================================================
+// Field Search Status across Multi-Surface Package Inspections
+// ============================================================================
+export const FieldSearchStatusSchema = z.enum([
+  'SEARCH_INCOMPLETE',
+  'SEARCH_COMPLETED_NO_EVIDENCE',
+  'FOUND',
+  'CONFLICT',
+  'INSPECTOR_CONFIRMED',
+]);
+export type FieldSearchStatus = z.infer<typeof FieldSearchStatusSchema>;
 
 // ============================================================================
 // Product Commodity Categories
@@ -440,3 +510,63 @@ export const ReportFormatSchema = z.enum([
   'JSON',
 ]);
 export type ReportFormat = z.infer<typeof ReportFormatSchema>;
+
+// ============================================================================
+// Phase F: Inspector Action Center Types & Priority Classes
+// ============================================================================
+export const ActionClassSchema = z.enum([
+  'MANDATORY',
+  'ADVISORY',
+]);
+export type ActionClass = z.infer<typeof ActionClassSchema>;
+
+export const ActionItemTypeSchema = z.enum([
+  'CONFLICT_REQUIRES_VERIFICATION',
+  'INSPECTOR_CORRECTION_REQUIRED',
+  'LOW_EVIDENCE_QUALITY',
+  'SEARCH_INCOMPLETE',
+  'IMAGE_QUALITY_ISSUE',
+  'MISSING_REQUIRED_INPUT',
+  'ECOMMERCE_DISCREPANCY',
+  'REVIEW_RECOMMENDED',
+]);
+export type ActionItemType = z.infer<typeof ActionItemTypeSchema>;
+
+// ============================================================================
+// Phase F: Chronological Inspection Timeline Events
+// ============================================================================
+export const TimelineEventTypeSchema = z.enum([
+  'INSPECTION_CREATED',
+  'IMAGE_CAPTURED',
+  'OCR_COMPLETED',
+  'DECLARATIONS_EXTRACTED',
+  'EVIDENCE_FUSED',
+  'CONFLICT_DETECTED',
+  'RULES_EVALUATED',
+  'AI_OBSERVATION_RECORDED',
+  'INSPECTOR_VERIFIED',
+  'INSPECTOR_CORRECTED',
+  'CONFLICT_ACKNOWLEDGED',
+  'REINSPECTION_REQUESTED',
+  'ADDITIONAL_EVIDENCE_ATTACHED',
+  'INSPECTION_DECISION_RECORDED',
+  'INSPECTOR_DECISION_RECORDED',
+  'INSPECTION_FINALIZED',
+  'FINALIZED',
+  'INSPECTION_REOPENED',
+  'REOPENED',
+  'INSPECTION_AMENDED',
+  'REPORT_GENERATED',
+  'SYNC_COMPLETED',
+]);
+export type TimelineEventType = z.infer<typeof TimelineEventTypeSchema>;
+
+// ============================================================================
+// Phase F: Conflict Acknowledgement Status
+// ============================================================================
+export const ConflictAcknowledgementStatusSchema = z.enum([
+  'ACKNOWLEDGED',
+  'RESOLVED_BY_CORRECTION',
+  'PENDING',
+]);
+export type ConflictAcknowledgementStatus = z.infer<typeof ConflictAcknowledgementStatusSchema>;

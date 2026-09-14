@@ -28,7 +28,7 @@ export function computeLocalGeometry(
   const measurements: VisualMeasurement[] = [];
 
   // 1. Identify dominant regions
-  const dominantRegions = regions.filter(r => r.confidence >= 0.85);
+  const dominantRegions = regions.filter(r => (r.confidence ?? 0.0) >= 0.85);
 
   // 2. Estimate Principal Display Panel (PDP) area heuristic
   // For front surface, estimate based on packaging aspect ratio
@@ -60,7 +60,7 @@ export function computeLocalGeometry(
       type: 'FONT_HEIGHT',
       value: estimatedFontHeightMm,
       unit: 'mm',
-      confidence: netQtyRegion.confidence,
+      confidence: netQtyRegion.confidence ?? 0.85,
       targetRegionId: netQtyRegion.id,
       targetSurface: surface,
       calibrationApplied: false,

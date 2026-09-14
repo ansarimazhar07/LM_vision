@@ -1,4 +1,5 @@
 import { createBrowserClient } from '@lm-vision/supabase-client/browser';
+import { normalizeInspectionStatus } from '@lm-vision/shared-types';
 
 export type Row = Record<string, unknown>;
 
@@ -91,6 +92,7 @@ function decorate(inspections: Row[], products: Map<string, Row>, users: Map<str
     return {
       ...inspection,
       id: String(inspection['id']),
+      status: normalizeInspectionStatus(String(inspection['status'] ?? 'DRAFT')),
       productName: String(product?.['name'] ?? 'Unclassified product'),
       productCategory: String(product?.['category'] ?? '—'),
       inspectorName: String(inspector?.['full_name'] ?? 'Restricted'),
@@ -458,3 +460,158 @@ export async function simpleList(table: string, order = 'created_at', limit = 10
     return getDemoSimpleList(table);
   }
 }
+
+export async function reopenInspection(
+  id: string,
+  reason: string,
+  inspectorId: string,
+  role?: string,
+): Promise<{ success: boolean; error?: string }> {
+  if (!reason || reason.trim().length < 5) {
+    return { success: false, error: 'Reopening requires a substantive reason (at least 5 characters).' };
+  }
+  const allowedRoles = ['INSPECTOR', 'SUPERVISOR', 'ADMIN'];
+  if (role && !allowedRoles.includes(role)) {
+    return { success: false, error: `Role '${role}' is not authorized to reopen finalized inspections.` };
+  }
+
+  try {
+    const supabase = client();
+    const { data: existing } = await supabase.from('inspections').select('*').eq('id', id).single();
+    if (existing) {
+      const now = new Date().toISOString();
+      const prevDecision = existing['compliance_result'] || existing['status'];
+      
+      await supabase.from('inspection_amendments').insert({
+        inspection_id: id,
+        amended_by: inspectorId,
+        amendment_reason: reason.trim(),
+        previous_decision: prevDecision,
+        amended_at: now,
+      });
+
+      await supabase.from('audit_logs').insert({
+        entity_id: id,
+        entity_type: 'INSPECTION',
+        action: 'REOPENED',
+        actor_id: inspectorId,
+        metadata: { reason: reason.trim(), previousDecision: prevDecision },
+        created_at: now,
+      });
+
+      const { error: updateErr } = await supabase.from('inspections').update({
+        status: 'REOPENED',
+        reopened_at: now,
+        reopen_reason: reason.trim(),
+        updated_at: now,
+      }).eq('id', id);
+
+      if (updateErr) throw new Error(updateErr.message);
+      return { success: true };
+    }
+  } catch (err) {
+    console.warn('[reopenInspection] Remote update failed, applying to local store:', err);
+  }
+
+  const rawList = getStoredRawInspections();
+  const target = rawList.find((item) => item.id === id);
+  if (target) {
+    const now = new Date().toISOString();
+    target.previousDecision = target.decision?.decision || target.complianceResult || 'FINALIZED';
+    target.status = 'REOPENED';
+    target.reopenedAt = now;
+    target.reopenReason = reason.trim();
+    target.updatedAt = now;
+    addOrUpdateRawInspection(target);
+    return { success: true };
+  }
+
+  return { success: false, error: `Inspection '${id}' not found.` };
+}
+
+export async function acknowledgeConflictInDb(
+  inspectionId: string,
+  conflictId: string,
+  inspectorId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const now = new Date().toISOString();
+  try {
+    const supabase = client();
+    await supabase.from('conflict_acknowledgements').insert({
+      inspection_id: inspectionId,
+      conflict_id: conflictId,
+      inspector_id: inspectorId,
+      acknowledgement_text: 'I reviewed the conflicting evidence.',
+      status: 'ACKNOWLEDGED',
+      acknowledged_at: now,
+    });
+  } catch (err) {
+    console.debug('[acknowledgeConflictInDb] Remote insert failed, storing locally:', err);
+  }
+
+  const rawList = getStoredRawInspections();
+  const target = rawList.find((item) => item.id === inspectionId);
+  if (target) {
+    if (!Array.isArray(target.conflictAcknowledgements)) {
+      target.conflictAcknowledgements = [];
+    }
+    target.conflictAcknowledgements.push({
+      conflictId,
+      inspectorId,
+      status: 'ACKNOWLEDGED',
+      acknowledgedAt: now,
+      acknowledgementText: 'I reviewed the conflicting evidence.',
+    });
+    target.updatedAt = now;
+    addOrUpdateRawInspection(target);
+    return { success: true };
+  }
+
+  return { success: true };
+}
+
+export async function finalizeInspectionInDb(
+  inspectionId: string,
+  decision: string,
+  comments: string,
+  inspectorId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const now = new Date().toISOString();
+  try {
+    const supabase = client();
+    await supabase.from('inspector_decisions').insert({
+      inspection_id: inspectionId,
+      inspector_id: inspectorId,
+      decision,
+      comments: comments || 'Final statutory determination.',
+      decided_at: now,
+    });
+    await supabase.from('inspections').update({
+      status: 'FINALIZED',
+      completed_at: now,
+      updated_at: now,
+    }).eq('id', inspectionId);
+  } catch (err) {
+    console.debug('[finalizeInspectionInDb] Remote update failed, storing locally:', err);
+  }
+
+  const rawList = getStoredRawInspections();
+  const target = rawList.find((item) => item.id === inspectionId);
+  if (target) {
+    target.status = 'FINALIZED';
+    target.decision = {
+      decision,
+      comments: comments || 'Final statutory determination.',
+      decidedAt: now,
+      inspectorId,
+    };
+    target.isFinalized = true;
+    target.finalizedAt = now;
+    target.updatedAt = now;
+    addOrUpdateRawInspection(target);
+    return { success: true };
+  }
+
+  return { success: true };
+}
+

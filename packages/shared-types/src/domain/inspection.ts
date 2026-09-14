@@ -39,6 +39,16 @@ export const InspectionImageSchema = z.object({
   quality: ImageQualitySchema.optional(),
   capturedAt: IsoTimestampSchema,
   createdAt: IsoTimestampSchema,
+  // Multi-Surface Capture Provenance (backward-compatible, optional)
+  originalImageId: z.string().optional(),
+  surfaceId: z.string().optional(),
+  captureId: z.string().optional(),
+  surfaceType: PackageSurfaceSchema.optional(),
+  imageDimensions: z.object({ width: z.number().positive(), height: z.number().positive() }).optional(),
+  orientation: z.union([z.number(), z.string()]).optional(),
+  originalImageRef: z.string().optional(),
+  derivedImageRefs: z.array(z.string()).optional(),
+  regionRefs: z.array(z.string()).optional(),
 });
 export type InspectionImage = z.infer<typeof InspectionImageSchema>;
 

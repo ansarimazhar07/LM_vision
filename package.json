@@ -19,6 +19,7 @@
     "start:mobile": "npm run start --workspace=@lm-vision/mobile",
     "start:mobile:web": "npm run web --workspace=@lm-vision/mobile",
     "start:mobile:android": "npm run android --workspace=@lm-vision/mobile",
+    "start:web": "npm run dev --workspace=@lm-vision/web",
     "start:ai": "npm run dev --workspace=@lm-vision/ai-engine",
     "start:backend": "node services/ai-engine/dist/run-server.js",
     "lint": "echo \"Linting placeholder for Phase 1\""

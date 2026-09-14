@@ -55,6 +55,9 @@ export interface PipelineExecutionResult {
   complianceSummary?: ComplianceEvaluationSummary;
   fallbackNotice?: string;
   hybridSummary?: HybridPerceptionSummary;
+  analysisMode?: 'CLOUD_AI' | 'LOCAL_ONLY' | 'HYBRID';
+  cloudAIStatus?: 'AVAILABLE' | 'UNAVAILABLE' | 'PARTIAL';
+  cloudProvidersAttempted?: ('GEMINI' | 'GROK')[];
   error?: string;
   errorCode?: 'IMAGE_REQUIRED' | 'IMAGE_CORRUPT' | 'QUALITY_REJECTED' | 'OCR_FAILED' | 'PIPELINE_ERROR';
 }

@@ -2,6 +2,7 @@ import AsyncStoragePkg from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { LocalInspectionDraft } from '../state/draft';
 import { LocalInspectionDraftSchema } from '../state/draft';
+import { normalizeInspectionStatus } from '@lm-vision/shared-types';
 import { syncManager } from './syncManager';
 
 interface StorageBackend {
@@ -200,6 +201,11 @@ export class InspectionStorageService {
 
       return parsed
         .map((item) => {
+          if (item && typeof item === 'object') {
+            if ('status' in item && typeof item.status === 'string') {
+              item.status = normalizeInspectionStatus(item.status);
+            }
+          }
           const result = LocalInspectionDraftSchema.safeParse(item);
           return result.success ? result.data : null;
         })

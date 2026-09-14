@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@lm-vision/config": "*",
+    "@lm-vision/perception": "*",
     "@lm-vision/shared-types": "*",
     "@lm-vision/supabase-client": "*",
     "@lm-vision/ui": "*",

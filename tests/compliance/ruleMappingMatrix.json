@@ -1,0 +1,128 @@
+[
+  {
+    "ruleId": "GSR-202E-RULE-06-01-A",
+    "ruleNumber": "6(1)(a)",
+    "requirement": "Declaration of Name and Complete Address of Manufacturer, Packer, or Importer",
+    "requiredEvidence": ["MANUFACTURER_NAME_ADDRESS"],
+    "optionalEvidence": ["PACKER_NAME_ADDRESS", "IMPORTER_NAME_ADDRESS"],
+    "supportingEvidence": ["surfaceProvenance", "pinCode", "locality"],
+    "applicability": "Applies to all packaged commodities for retail sale. Imported commodities require importer details.",
+    "insufficientWhen": [
+      "SEARCH_INCOMPLETE",
+      "CONFLICT",
+      "LOW_CONFIDENCE",
+      "IMAGE_UNACCEPTABLE",
+      "ADDRESS_MISSING_POSTAL_DETAILS"
+    ]
+  },
+  {
+    "ruleId": "GSR-202E-RULE-06-01-B",
+    "ruleNumber": "6(1)(b)",
+    "requirement": "Declaration of Generic or Common Name of the Commodity",
+    "requiredEvidence": ["GENERIC_NAME"],
+    "optionalEvidence": [],
+    "supportingEvidence": ["surfaceProvenance", "categorySignal"],
+    "applicability": "Applies to all packaged commodities containing a single or combination commodity.",
+    "insufficientWhen": [
+      "SEARCH_INCOMPLETE",
+      "CONFLICT",
+      "LOW_CONFIDENCE",
+      "IMAGE_UNACCEPTABLE"
+    ]
+  },
+  {
+    "ruleId": "GSR-202E-RULE-06-01-C",
+    "ruleNumber": "6(1)(c)",
+    "requirement": "Declaration of Net Quantity in Standard SI Units of Weight, Measure or Number",
+    "requiredEvidence": ["NET_QUANTITY"],
+    "optionalEvidence": [],
+    "supportingEvidence": ["numericValue", "unitSymbol", "surfaceProvenance"],
+    "applicability": "Applies to all packaged commodities. Standard SI metric units required under Rule 13.",
+    "insufficientWhen": [
+      "SEARCH_INCOMPLETE",
+      "CONFLICT",
+      "LOW_CONFIDENCE",
+      "MISSING_UNIT",
+      "UNRESOLVED_NUMERIC_VALUE",
+      "IMAGE_UNACCEPTABLE"
+    ]
+  },
+  {
+    "ruleId": "GSR-202E-RULE-06-01-D",
+    "ruleNumber": "6(1)(d)",
+    "requirement": "Declaration of Month and Year of Manufacture, Pre-Packing or Import",
+    "requiredEvidence": ["DATE_OF_MANUFACTURE"],
+    "optionalEvidence": ["DATE_OF_PACKAGING", "DATE_OF_IMPORT"],
+    "supportingEvidence": ["monthYearFormat", "surfaceProvenance"],
+    "applicability": "Applies to all retail packaged commodities except bidis, agarbatti, and domestic LPG cylinders under Rule 6(1)(g) Proviso A.",
+    "insufficientWhen": [
+      "SEARCH_INCOMPLETE",
+      "CONFLICT",
+      "LOW_CONFIDENCE",
+      "IMAGE_UNACCEPTABLE",
+      "EXPIRY_ONLY_NO_MFD",
+      "AMBIGUOUS_DATE_FORMAT"
+    ]
+  },
+  {
+    "ruleId": "GSR-202E-RULE-06-01-E",
+    "ruleNumber": "6(1)(e)",
+    "requirement": "Declaration of Retail Sale Price (MRP) Inclusive of All Taxes",
+    "requiredEvidence": ["MRP"],
+    "optionalEvidence": ["UNIT_SALE_PRICE"],
+    "supportingEvidence": ["inclusiveOfAllTaxesPhrase", "numericPrice", "currencySymbol", "surfaceProvenance"],
+    "applicability": "Applies to all retail packages except bidis, LPG cylinders, and alcoholic beverages governed by state excise under Rule 6(1)(e) Proviso & Rule 6(1)(g) Proviso C.",
+    "insufficientWhen": [
+      "SEARCH_INCOMPLETE",
+      "CONFLICT",
+      "LOW_CONFIDENCE",
+      "OFFER_PRICE_ONLY",
+      "MISSING_TAX_INCLUSION",
+      "IMAGE_UNACCEPTABLE"
+    ]
+  },
+  {
+    "ruleId": "GSR-202E-RULE-06-02",
+    "ruleNumber": "6(2)",
+    "requirement": "Declaration of Consumer Care Contact Details for Complaints",
+    "requiredEvidence": ["CONSUMER_CARE_DETAILS"],
+    "optionalEvidence": [],
+    "supportingEvidence": ["telephoneNumber", "emailAddress", "contactAddress", "surfaceProvenance"],
+    "applicability": "Applies to all retail packaged commodities under Rule 6(2).",
+    "insufficientWhen": [
+      "SEARCH_INCOMPLETE",
+      "CONFLICT",
+      "LOW_CONFIDENCE",
+      "NO_COMMUNICATION_CHANNEL",
+      "IMAGE_UNACCEPTABLE"
+    ]
+  },
+  {
+    "ruleId": "GSR-202E-RULE-07-02-T1",
+    "ruleNumber": "7(2)",
+    "requirement": "Minimum Height of Numerals in Net Quantity Declaration on Principal Display Panel",
+    "requiredEvidence": ["NUMERAL_HEIGHT"],
+    "optionalEvidence": ["LETTER_HEIGHT", "PDP_AREA"],
+    "supportingEvidence": ["calibratedScale", "gaugeMeasurementMm", "aspectRatio"],
+    "applicability": "Applies to net quantity numerals on the Principal Display Panel under Table I.",
+    "insufficientWhen": [
+      "MEASUREMENT_UNAVAILABLE",
+      "UNCALIBRATED_PIXEL_DATA",
+      "LOW_CONFIDENCE"
+    ]
+  },
+  {
+    "ruleId": "GSR-202E-RULE-18-02",
+    "ruleNumber": "18(2)",
+    "requirement": "Prohibition Against Selling Pre-Packaged Commodity Exceeding Declared MRP",
+    "requiredEvidence": ["MRP", "ACTUAL_SALE_PRICE"],
+    "optionalEvidence": ["ECOMMERCE_LISTED_PRICE"],
+    "supportingEvidence": ["purchaseTransaction", "platformListing", "timestamp"],
+    "applicability": "Applies whenever a retail sale transaction or retail price observation occurs.",
+    "insufficientWhen": [
+      "SALE_PRICE_UNAVAILABLE",
+      "PRINTED_MRP_UNRESOLVED",
+      "INSPECTOR_VERIFICATION_REQUIRED"
+    ]
+  }
+]

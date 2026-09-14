@@ -15,6 +15,10 @@ import { useInspectionWorkflow } from '../state/InspectionWorkflowProvider';
 import { Screen } from '../components/Screen';
 import { Surface } from '../components/Surface';
 import { Button } from '../components/Button';
+import {
+  buildDeclarationDrillDown,
+  type DeclarationDrillDownRecord,
+} from '@lm-vision/perception';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'EvidenceViewer'>;
 
@@ -22,74 +26,12 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IMAGE_DISPLAY_WIDTH = SCREEN_WIDTH - 64;
 const IMAGE_DISPLAY_HEIGHT = (SCREEN_WIDTH - 64) * 1.1;
 
-export function parseBoundingBox(
-  b: any
-): { xMin: number; yMin: number; xMax: number; yMax: number } | null {
-  if (!b || typeof b !== 'object') return null;
-
-  let xMin: number | undefined;
-  let yMin: number | undefined;
-  let xMax: number | undefined;
-  let yMax: number | undefined;
-
-  // Format 1: { xMin, yMin, xMax, yMax } or with width/height
-  if (typeof b.xMin === 'number' && typeof b.yMin === 'number') {
-    xMin = b.xMin;
-    yMin = b.yMin;
-    xMax = typeof b.xMax === 'number' ? b.xMax : typeof b.width === 'number' ? b.xMin + b.width : undefined;
-    yMax = typeof b.yMax === 'number' ? b.yMax : typeof b.height === 'number' ? b.yMin + b.height : undefined;
-  }
-  // Format 2: { x, y, width, height }
-  else if (
-    typeof b.x === 'number' &&
-    typeof b.y === 'number' &&
-    typeof b.width === 'number' &&
-    typeof b.height === 'number'
-  ) {
-    xMin = b.x;
-    yMin = b.y;
-    xMax = b.x + b.width;
-    yMax = b.y + b.height;
-  }
-  // Format 3: { left, top, width, height }
-  else if (
-    typeof b.left === 'number' &&
-    typeof b.top === 'number' &&
-    typeof b.width === 'number' &&
-    typeof b.height === 'number'
-  ) {
-    xMin = b.left;
-    yMin = b.top;
-    xMax = b.left + b.width;
-    yMax = b.top + b.height;
-  }
-
-  if (xMin === undefined || yMin === undefined || xMax === undefined || yMax === undefined) {
-    return null;
-  }
-
-  // Handle pixel scale coordinates (> 1.5)
-  if (xMax > 1.5 || yMax > 1.5) {
-    const scaleX = xMax > 100 ? 1000 : 1;
-    const scaleY = yMax > 100 ? 1000 : 1;
-    xMin /= scaleX;
-    xMax /= scaleX;
-    yMin /= scaleY;
-    yMax /= scaleY;
-  }
-
-  // Clamp within [0.0, 1.0]
-  xMin = Math.max(0, Math.min(1, xMin));
-  yMin = Math.max(0, Math.min(1, yMin));
-  xMax = Math.max(0, Math.min(1, xMax));
-  yMax = Math.max(0, Math.min(1, yMax));
-
-  if (xMax <= xMin || yMax <= yMin) {
-    return null;
-  }
-
-  return { xMin, yMin, xMax, yMax };
-}
+import {
+  parseBoundingBox,
+  computeRenderedImageBounds,
+  projectNormalizedBoxToPixels,
+} from '../utils/boundingBox';
+export { parseBoundingBox };
 
 export function EvidenceViewerScreen({ route, navigation }: Props): React.JSX.Element {
   const workflow = useInspectionWorkflow();
@@ -141,8 +83,29 @@ export function EvidenceViewerScreen({ route, navigation }: Props): React.JSX.El
   const [zoomScale, setZoomScale] = useState(1);
   const [heatmapEnabled, setHeatmapEnabled] = useState(true);
   const [glareMode, setGlareMode] = useState<'ORIGINAL' | 'GLARE_REDUCED'>('ORIGINAL');
+  const [imageDimensions, setImageDimensions] = useState<Record<string, { width: number; height: number }>>({});
 
   const currentImage = images[currentIdx] || images[0];
+
+  // Intrinsic image dimension loader for exact coordinate calibration
+  useEffect(() => {
+    if (currentImage?.fileUrl) {
+      const url = currentImage.fileUrl;
+      if (!imageDimensions[url]) {
+        Image.getSize(
+          url,
+          (width, height) => {
+            if (width > 0 && height > 0) {
+              setImageDimensions((prev) => ({ ...prev, [url]: { width, height } }));
+            }
+          },
+          () => {
+            // Silently fallback if local URI cannot be inspected via getSize
+          }
+        );
+      }
+    }
+  }, [currentImage?.fileUrl, imageDimensions]);
 
   // Linked declarations for current image surface
   const linkedDeclarations = useMemo(() => {
@@ -155,6 +118,17 @@ export function EvidenceViewerScreen({ route, navigation }: Props): React.JSX.El
     if (!activeInspection || !currentImage) return [];
     return activeInspection.complianceAssessments || [];
   }, [activeInspection, currentImage]);
+
+  // Phase E: Declaration Drill-Down with Provenance
+  const drillDownRecords = useMemo(() => {
+    const fusedPackage = (activeInspection?.aiAnalysis as any)?.rawResponse?.phaseD;
+    return linkedDeclarations.map((decl: any) =>
+      buildDeclarationDrillDown({
+        decl,
+        fusedPackage,
+      })
+    );
+  }, [linkedDeclarations, activeInspection?.aiAnalysis]);
 
   // Visual Overlays with validated normalized coordinates (Zero Fabricated Coordinates)
   // Map declaration types to their corresponding Legal Metrology rule numbers
@@ -325,6 +299,22 @@ export function EvidenceViewerScreen({ route, navigation }: Props): React.JSX.El
   const currentDisplayWidth = IMAGE_DISPLAY_WIDTH * zoomScale;
   const currentDisplayHeight = IMAGE_DISPLAY_HEIGHT * zoomScale;
 
+  const naturalDim = currentImage?.fileUrl ? imageDimensions[currentImage.fileUrl] : null;
+  const naturalWidth = naturalDim?.width || (currentImage as any)?.width || 1000;
+  const naturalHeight = naturalDim?.height || (currentImage as any)?.height || 1000;
+  const exifRotation = (currentImage as any)?.rotationDegrees || (currentImage as any)?.exifRotation || 0;
+
+  const renderedBounds = useMemo(() => {
+    return computeRenderedImageBounds(
+      naturalWidth,
+      naturalHeight,
+      currentDisplayWidth,
+      currentDisplayHeight,
+      'contain',
+      exifRotation
+    );
+  }, [naturalWidth, naturalHeight, currentDisplayWidth, currentDisplayHeight, exifRotation]);
+
   return (
     <Screen title="Evidence & Heatmap">
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -409,10 +399,11 @@ export function EvidenceViewerScreen({ route, navigation }: Props): React.JSX.El
                   pointerEvents="none"
                 >
                   {heatmapOverlays.map((ov) => {
-                    const left = ov.box.xMin * currentDisplayWidth;
-                    const top = ov.box.yMin * currentDisplayHeight;
-                    const width = (ov.box.xMax - ov.box.xMin) * currentDisplayWidth;
-                    const height = (ov.box.yMax - ov.box.yMin) * currentDisplayHeight;
+                    const pixelBox = projectNormalizedBoxToPixels(ov.box, renderedBounds);
+                    const left = pixelBox.left;
+                    const top = pixelBox.top;
+                    const width = pixelBox.width;
+                    const height = pixelBox.height;
 
                     const borderColor =
                       ov.status === 'PASS'
@@ -501,6 +492,51 @@ export function EvidenceViewerScreen({ route, navigation }: Props): React.JSX.El
                 <Text style={styles.noCoordsVal}>Region location unavailable</Text>
               </View>
             ))}
+          </Surface>
+        )}
+
+        {/* Phase E: Declaration Evidence Drill-Down & Provenance Breakdown */}
+        {drillDownRecords.length > 0 && (
+          <Surface style={styles.drillDownCard}>
+            <Text style={styles.cardHeading}>Declaration Evidence Drill-Down</Text>
+            <Text style={styles.drillDownSub}>
+              Direct mapping between physical image pixels, extraction provenance, and statutory rule evaluations:
+            </Text>
+            {drillDownRecords.map((rec: DeclarationDrillDownRecord, idx: number) => {
+              const provColor =
+                rec.evidenceStatus === 'CONFLICT'
+                  ? '#c2410c'
+                  : rec.source.startsWith('LOCAL')
+                  ? '#16a34a'
+                  : '#7c3aed';
+              const provBg =
+                rec.evidenceStatus === 'CONFLICT'
+                  ? '#fff7ed'
+                  : rec.source.startsWith('LOCAL')
+                  ? '#f0fdf4'
+                  : '#f5f3ff';
+              return (
+                <View key={`${rec.fieldType}-${idx}`} style={styles.drillDownItem}>
+                  <View style={styles.drillDownHeader}>
+                    <Text style={styles.drillDownDeclType}>{rec.field}</Text>
+                    <View style={[styles.provenancePill, { backgroundColor: provBg, borderColor: provColor }]}>
+                      <Text style={[styles.provenancePillText, { color: provColor }]}>{rec.source}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.drillDownVal} numberOfLines={2}>
+                    Observed: <Text style={{ fontWeight: '700' }}>{rec.rawOcrText || '—'}</Text>
+                  </Text>
+                  <View style={styles.drillDownMetaRow}>
+                    <Text style={styles.drillDownMeta}>
+                      Confidence: {Math.round(rec.confidence * 100)}% {rec.surface ? `· Surface: ${rec.surface}` : ''}
+                    </Text>
+                    <Text style={styles.drillDownMeta}>
+                      Status: {rec.evidenceStatus}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
           </Surface>
         )}
 
@@ -861,5 +897,66 @@ const styles = StyleSheet.create({
     color: '#64748b',
     textAlign: 'center',
     marginBottom: 16,
+  },
+  drillDownCard: {
+    padding: 14,
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+  drillDownSub: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+    marginBottom: 10,
+    lineHeight: 15,
+  },
+  drillDownItem: {
+    padding: 10,
+    backgroundColor: '#f8fafc',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    marginBottom: 8,
+  },
+  drillDownHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  drillDownDeclType: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0f172a',
+    textTransform: 'capitalize',
+  },
+  provenancePill: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  provenancePillText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  drillDownVal: {
+    fontSize: 12,
+    color: '#334155',
+    marginBottom: 4,
+  },
+  drillDownMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingTop: 4,
+    marginTop: 2,
+  },
+  drillDownMeta: {
+    fontSize: 10,
+    color: '#64748b',
+    fontWeight: '600',
   },
 });

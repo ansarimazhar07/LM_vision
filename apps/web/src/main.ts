@@ -2,7 +2,17 @@ import {
   client, dashboard, getProfile, getSignedUrl, inspectionDetail, isConfigured, listInspections,
   requestPasswordReset, signIn, signOut, simpleList, type InspectionDetail, type InspectionFilters, type InspectionListItem, type Row,
   createSampleLiveInspection, syncFromBackendApi,
+  reopenInspection, acknowledgeConflictInDb, finalizeInspectionInDb,
 } from './data.js';
+import {
+  calculateInspectionQualityScore,
+  analyzeEvidenceCompleteness,
+  comparePackages,
+  buildComplianceWorkspace,
+  buildInspectionTimeline,
+  type PackageComparisonSubject,
+} from '@lm-vision/perception';
+import { normalizeInspectionStatus } from '@lm-vision/shared-types';
 import './styles.css';
 
 type SessionProfile = Awaited<ReturnType<typeof getProfile>>;
@@ -22,6 +32,7 @@ let activeInspectionPage = 1;
 
 const nav = [
   ['Dashboard', '#/dashboard', '▦'], ['Inspections', '#/inspections', '□'], ['Pending review', '#/reviews', '◷'],
+  ['Package comparison', '#/compare', '⇄'],
   ['Rule library', '#/rules', '⚖'], ['Evidence', '#/evidence', '◉'], ['Reports', '#/reports', '▤'],
   ['Analytics', '#/analytics', '◔'], ['Sync monitor', '#/sync', '↻'], ['Audit trail', '#/audit', '≡'],
   ['Inspectors', '#/inspectors', '♙'], ['Profile', '#/profile', '○'],
@@ -39,8 +50,10 @@ function fmtDate(value: unknown, withTime = true): string {
 function shortId(value: unknown): string { const id = String(value ?? ''); return id ? `INS-${id.slice(0, 8).toUpperCase()}` : '—'; }
 function json(value: unknown): string { return esc(typeof value === 'string' ? value : JSON.stringify(value ?? {}, null, 2)); }
 function badge(value: unknown): string {
-  const status = text(value).replaceAll('_', ' ');
-  const kind = /FAIL|NON.COMPLIANT|FAILED|CONFLICT/i.test(status) ? 'bad' : /PASS|DECIDED|SYNCED|VERIFIED|ACTIVE|GENERATED/i.test(status) ? 'good' : /REQUIRES|PENDING|REVIEW|LOCAL|SYNCING|DRAFT/i.test(status) ? 'warn' : 'neutral';
+  const raw = text(value);
+  const normalized = normalizeInspectionStatus(raw);
+  const status = normalized.replaceAll('_', ' ');
+  const kind = /FAIL|NON.COMPLIANT|FAILED|CONFLICT|BLOCKED/i.test(status) ? 'bad' : /PASS|DECIDED|FINALIZED|SYNCED|VERIFIED|ACTIVE|GENERATED|READY/i.test(status) ? 'good' : /REQUIRES|PENDING|REVIEW|NEEDS|LOCAL|SYNCING|DRAFT|REOPENED/i.test(status) ? 'warn' : 'neutral';
   return `<span class="badge ${kind}">${esc(status)}</span>`;
 }
 function rowCount(rows: Row[], predicate: (row: Row) => boolean): number { return rows.filter(predicate).length; }
@@ -96,20 +109,595 @@ async function inspectionsPage(filters: InspectionFilters = {}, page = 1): Promi
 }
 
 function infoCard(label: string, value: unknown): string { return `<div class="info-item"><span>${esc(label)}</span><strong>${esc(text(value))}</strong></div>`; }
-function assessmentRows(rows: Row[]): string {
-  if (!rows.length) return '<p class="empty-inline">No deterministic rule-engine assessments are available.</p>';
-  return `<div class="assessment-list">${rows.map((row) => `<article class="assessment"><div class="assessment-top"><div><p class="eyebrow">Deterministic rule engine</p><h3>${esc(row['rule_number'])}${row['sub_rule'] ? `(${esc(row['sub_rule'])})` : ''} · ${esc(row['rule_title'])}</h3></div>${badge(row['result'])}</div><p>${esc(row['explanation'])}</p><dl><div><dt>Source</dt><dd>${esc(row['source_document'])} · p. ${esc(row['source_page'])}</dd></div><div><dt>Rule version</dt><dd>${esc(row['rule_version_id'])}</dd></div><div><dt>Observed value</dt><dd><code>${json(row['observed_value'])}</code></dd></div><div><dt>Expected condition</dt><dd><code>${json(row['expected_constraint'])}</code></dd></div><div><dt>Evidence</dt><dd>${esc(Array.isArray(row['evidence_ids']) ? row['evidence_ids'].join(', ') : row['evidence_ids'])}</dd></div><div><dt>Assessed</dt><dd>${fmtDate(row['evaluated_at'])}</dd></div></dl></article>`).join('')}</div>`;
+function surfaceBadge(surface: unknown): string {
+  const s = String(surface ?? 'FRONT').toUpperCase();
+  const cls = s.toLowerCase();
+  return `<span class="surface-badge surface-${cls}">${esc(s)}</span>`;
 }
-function reviewRows(rows: Row[]): string {
-  if (!rows.length) return '<p class="empty-inline">No inspector reviews or corrections are available.</p>';
-  return `<div class="review-list">${rows.map((row) => { const correction = row['correction'] as Row | null; return `<article class="review"><div>${badge(row['status'])} ${row['action'] ? badge(row['action']) : ''}</div><div class="comparison"><div><span>Original observation</span><strong>${esc(json(row['original_observed_value']))}</strong></div><div><span>Inspector correction</span><strong>${esc(correction ? json(correction['correctedValue'] ?? correction['corrected_value']) : 'No correction')}</strong></div></div><p>${esc(correction?.['reason'] ?? row['rationale'] ?? 'No rationale recorded.')}</p><small>Inspector: ${esc(row['inspector_id'])} · ${fmtDate(row['reviewed_at'] ?? row['updated_at'])}</small></article>`; }).join('')}</div>`;
+
+function renderFinalizedLockBanner(inspection: Row, isFinalized: boolean, inspectionId: string): string {
+  if (!isFinalized) return '';
+  return `
+    <section class="finalized-lock-banner">
+      <div>
+        <h3><span style="font-size: 18px;">🔒</span> RECORD SEALED & TAMPER-LOCKED</h3>
+        <p>Evidence, declarations, and determinations are sealed against ordinary modification. Controlled reopening requires substantive supervisory justification.</p>
+        <small style="color: #6ee7b7; display: block; margin-top: 4px;">Finalized at: ${fmtDate(inspection['completed_at'] ?? inspection['updated_at'])}</small>
+      </div>
+      <button class="button secondary" data-action="open-reopen-modal" data-inspection-id="${esc(inspectionId)}" style="background: white; color: #064e3b; font-weight: 800;">
+        🔓 Reopen Inspection
+      </button>
+    </section>
+  `;
 }
+
+function renderReopenedBanner(inspection: Row, isReopened: boolean): string {
+  if (!isReopened) return '';
+  return `
+    <section class="reopened-notice-banner">
+      <strong>⚠️ REOPENED INSPECTION UNDER AMENDMENT</strong>
+      <span>This inspection was previously finalized and reopened for authorized re-examination. The previous determination remains preserved in the audit trail.</span>
+      <small><strong>Previous Determination:</strong> ${esc(inspection['previous_decision'] ?? 'FINALIZED')} · <strong>Reopened on:</strong> ${fmtDate(inspection['reopened_at'])} · <strong>Reason:</strong> ${esc(inspection['reopen_reason'] ?? 'Supervisory review requested')}</small>
+    </section>
+  `;
+}
+
+function renderActionCenter(workspace: any, inspectionId: string): string {
+  const actions = workspace.actions as any[];
+  return `
+    <section class="action-center-panel">
+      <div class="action-center-header">
+        <div>
+          <p class="eyebrow">GUIDED VERIFICATION</p>
+          <h3 style="margin: 2px 0 0; font-size: 16px;">Action Center Queue</h3>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <span class="action-count-pill mandatory">${workspace.mandatoryActionCount} Mandatory</span>
+          <span class="action-count-pill advisory">${workspace.advisoryActionCount} Advisory</span>
+        </div>
+      </div>
+      <p style="font-size: 12px; color: #64748b; margin: 0 0 14px;">
+        Mandatory actions must be resolved or explicitly acknowledged before finalization. Advisory actions guide best-practice physical re-inspection without blocking.
+      </p>
+      ${actions.length ? `
+        <div class="action-cards-grid">
+          ${actions.map((act) => {
+            const isMandatory = act.actionClass === 'MANDATORY';
+            return `
+              <article class="action-card ${isMandatory ? 'mandatory' : 'advisory'}">
+                <div class="action-card-header">
+                  <h4>${esc(act.title)}</h4>
+                  <span class="action-count-pill ${isMandatory ? 'mandatory' : 'advisory'}">${esc(act.actionClass)}</span>
+                </div>
+                <p>${esc(act.description)}</p>
+                ${act.guidedReinspectionPrompt ? `
+                  <div class="action-advice">
+                    <strong>Guided Prompt:</strong> ${esc(act.guidedReinspectionPrompt)}
+                  </div>
+                ` : ''}
+                <div class="action-card-footer">
+                  <small style="color: #64748b; font-weight: 600;">Rule: ${esc(act.relatedRuleNumber ?? 'General')}</small>
+                  ${isMandatory && act.type === 'CONFLICT_REQUIRES_VERIFICATION' && !act.resolved ? `
+                    <button class="button secondary" style="font-size: 11px; padding: 4px 8px;" data-action="acknowledge-conflict" data-inspection-id="${esc(inspectionId)}" data-conflict-id="${esc(act.id)}">
+                      ✓ Acknowledge Conflict
+                    </button>
+                  ` : act.resolved ? `
+                    <span class="badge good">ACKNOWLEDGED</span>
+                  ` : `
+                    <span style="font-size: 11px; color: #64748b;">${esc(act.suggestedAction)}</span>
+                  `}
+                </div>
+              </article>
+            `;
+          }).join('')}
+        </div>
+      ` : '<p class="empty-inline">No pending action items in the verification queue.</p>'}
+    </section>
+  `;
+}
+
+function renderConflictPanel(workspace: any, inspectionId: string): string {
+  const conflictMappings = (workspace.mappings as any[]).filter((m) => m.observedEvidence.conflictDetails?.hasConflict);
+  if (!conflictMappings.length) return '';
+
+  return `
+    <section class="panel full" style="border-color: #fecdd3; background: #fff5f5; margin-bottom: 18px;">
+      <p class="eyebrow" style="color: #e11d48;">CROSS-SURFACE CONFLICT RECONCILIATION</p>
+      <h2 style="color: #9f1239; margin-bottom: 8px;">Conflicting Physical Evidence Detected</h2>
+      <p style="font-size: 12px; color: #475569; margin-bottom: 12px;">
+        Different packaging surfaces contain conflicting declaration values (e.g. Front vs Neck/Crimp). Under Legal Metrology standards, the system never picks a silent winner; all observations are preserved for human determination.
+      </p>
+      ${conflictMappings.map((m) => {
+        const cd = m.observedEvidence.conflictDetails;
+        const s1 = cd.surfaces[0] ?? 'FRONT';
+        const s2 = cd.surfaces[1] ?? 'NECK';
+        const v1 = cd.differingValues[0] ?? '—';
+        const v2 = cd.differingValues[1] ?? '—';
+        return `
+          <div class="conflict-box">
+            <div class="conflict-header">
+              <strong>${esc(m.ruleNumber)} · ${esc(m.ruleTitle)}</strong>
+              ${surfaceBadge(s1)} vs ${surfaceBadge(s2)}
+            </div>
+            <div class="conflict-comparison-grid">
+              <div class="conflict-surface-card">
+                <span>Observed on ${esc(s1)}</span>
+                <strong>${esc(typeof v1 === 'object' ? JSON.stringify(v1) : String(v1))}</strong>
+              </div>
+              <div class="conflict-surface-card">
+                <span>Observed on ${esc(s2)}</span>
+                <strong>${esc(typeof v2 === 'object' ? JSON.stringify(v2) : String(v2))}</strong>
+              </div>
+            </div>
+            <p style="font-size: 11px; color: #9f1239; margin: 6px 0 10px;">${esc(cd.reconciliationNotice)}</p>
+            <button class="button secondary" style="font-size: 11px; padding: 5px 10px; border-color: #fda4af; color: #9f1239;" data-action="acknowledge-conflict" data-inspection-id="${esc(inspectionId)}" data-conflict-id="conflict-${esc(m.ruleId)}">
+              ✓ I reviewed the conflicting evidence
+            </button>
+          </div>
+        `;
+      }).join('')}
+    </section>
+  `;
+}
+
+function renderAuthoritySplit(workspace: any, decision: Row | undefined, inspection: Row): string {
+  const sa = workspace.systemAssessment;
+  return `
+    <section class="authority-split-grid">
+      <!-- Card 1: System Assessment -->
+      <article class="authority-card system">
+        <div class="authority-card-header">
+          <div>
+            <p class="eyebrow" style="color: #0d9488;">Deterministic rule engine · Assessment</p>
+            <h3 style="font-size: 16px; margin: 2px 0 0;">System Assessment</h3>
+          </div>
+          ${badge(sa.overallResult)}
+        </div>
+        <p style="font-size: 12px; color: #475569; margin: 0 0 10px;">
+          ${esc(sa.summaryText)}
+        </p>
+        <div class="authority-breakdown">
+          <div class="authority-breakdown-item">
+            <small>PASS</small>
+            <strong style="color: #166534;">${sa.passCount}</strong>
+          </div>
+          <div class="authority-breakdown-item">
+            <small>FAIL</small>
+            <strong style="color: #991b1b;">${sa.failCount}</strong>
+          </div>
+          <div class="authority-breakdown-item">
+            <small>VERIFY</small>
+            <strong style="color: #92400e;">${sa.verificationRequiredCount}</strong>
+          </div>
+        </div>
+        <div class="advisory-box" style="margin-top: 10px; font-size: 11px;">
+          <strong>LEGAL INVARIANT:</strong> AI observes &amp; Rule Engine evaluates. The system assessment is an advisory computational finding and NEVER a legal determination.
+        </div>
+      </article>
+
+      <!-- Card 2: Human Statutory Decision -->
+      <article class="authority-card human">
+        <div class="authority-card-header">
+          <div>
+            <p class="eyebrow" style="color: #2563eb;">HUMAN STATUTORY AUTHORITY</p>
+            <h3 style="font-size: 16px; margin: 2px 0 0;">Inspector Final Decision</h3>
+          </div>
+          ${badge(decision ? decision['decision'] : 'PENDING DETERMINATION')}
+        </div>
+        ${decision ? `
+          <p style="font-size: 13px; color: #1e293b; font-weight: 600; margin: 0 0 6px;">
+            Statutory Outcome: ${esc(decision['decision'])}
+          </p>
+          <p style="font-size: 12px; color: #475569; margin: 0 0 10px;">
+            ${esc(decision['comments'] ?? 'No comments recorded.')}
+          </p>
+          <small style="color: #64748b; display: block;">
+            Inspector: ${esc(decision['inspector_id'] ?? inspection['inspector_id'] ?? 'Authorized Officer')} · ${fmtDate(decision['decided_at'])}
+          </small>
+        ` : `
+          <p style="font-size: 12px; color: #64748b; margin: 8px 0;">
+            No official final statutory decision has been recorded yet. The inspection remains open for verification.
+          </p>
+        `}
+      </article>
+    </section>
+  `;
+}
+
+function renderRuleMappingTable(workspace: any): string {
+  const mappings = workspace.mappings as any[];
+  if (!mappings.length) return '<p class="empty-inline">No rule-by-rule evidence mappings available.</p>';
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Rule &amp; Statutory Title</th>
+            <th>Surface Evidence</th>
+            <th>Observed Evidence</th>
+            <th>Rule Assessment</th>
+            <th>Action Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${mappings.map((m) => {
+            const sources = m.observedEvidence.sources as any[];
+            return `
+              <tr>
+                <td>
+                  <strong>${esc(m.ruleNumber)} ${m.subRule ? `(${esc(m.subRule)})` : ''}</strong>
+                  <small>${esc(m.ruleTitle)}</small>
+                  <small style="color: #94a3b8;">${esc(m.statutorySource)}</small>
+                </td>
+                <td>
+                  <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                    ${sources.length ? sources.map((s) => surfaceBadge(s.surface)).join('') : '<span class="surface-badge">NONE</span>'}
+                  </div>
+                </td>
+                <td>
+                  <strong>${esc(m.observedEvidence.rawText || text(m.observedEvidence.value))}</strong>
+                  <small>Status: ${badge(m.observedEvidence.evidenceStatus)}</small>
+                </td>
+                <td>
+                  ${badge(m.ruleEngineAssessment.result)}
+                  <small>${esc(m.ruleEngineAssessment.explanation)}</small>
+                </td>
+                <td>
+                  ${badge(m.inspectorAction.status)}
+                  <small>${esc(m.inspectorAction.suggestedAction)}</small>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderFinalizationGuardCard(workspace: any, isFinalized: boolean, inspectionId: string): string {
+  const guard = workspace.finalizationGuard;
+  return `
+    <section class="guard-panel">
+      <div class="guard-header">
+        <div>
+          <p class="eyebrow">FINALIZATION GUARD CHECK</p>
+          <h3 style="margin: 2px 0 0; font-size: 16px;">Pre-Flight Authorization Verification</h3>
+        </div>
+        <div>
+          ${guard.canFinalize ? '<span class="badge good">READY FOR FINALIZATION</span>' : '<span class="badge bad">FINALIZATION BLOCKED</span>'}
+        </div>
+      </div>
+      <p style="font-size: 12px; color: #64748b; margin: 8px 0 12px;">
+        Authoritative validation ensures all required evidence processing is complete, mandatory conflicts are acknowledged, and Rule Engine results are accessible.
+      </p>
+
+      ${guard.blockingReasons.length ? `
+        <ul class="blocking-list">
+          ${guard.blockingReasons.map((reason: string) => `<li><strong>⛔ BLOCKING:</strong> ${esc(reason)}</li>`).join('')}
+        </ul>
+      ` : ''}
+
+      ${guard.advisoryItems.length ? `
+        <div class="advisory-box" style="margin: 8px 0;">
+          <strong>Advisory Recommendations (Non-Blocking):</strong>
+          ${guard.advisoryItems.map((adv: string) => `<div>• ${esc(adv)}</div>`).join('')}
+        </div>
+      ` : ''}
+
+      ${!isFinalized ? `
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px; margin-top: 14px;">
+          <h4 style="margin: 0 0 10px; font-size: 13px;">Record Inspector Statutory Determination</h4>
+          <div style="display: grid; grid-template-columns: 200px 1fr auto; gap: 10px; align-items: flex-end;">
+            <div>
+              <label style="font-size: 11px; font-weight: 700; color: #475569; display: block; margin-bottom: 4px;">Statutory Decision</label>
+              <select id="final-decision-select" style="width: 100%; padding: 8px; border-radius: 5px; border: 1px solid #cbd5e1;">
+                <option value="COMPLIANT">COMPLIANT (Pass)</option>
+                <option value="NON_COMPLIANT">NON_COMPLIANT (Fail)</option>
+                <option value="SEIZED">SEIZED (Confiscation)</option>
+                <option value="NOTICE_ISSUED">NOTICE_ISSUED (Legal Notice)</option>
+                <option value="ESCALATED">ESCALATED (Supervisory Review)</option>
+                <option value="DISMISSED">DISMISSED (No Action)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size: 11px; font-weight: 700; color: #475569; display: block; margin-bottom: 4px;">Inspector Order / Summary Notes</label>
+              <input id="final-decision-comments" placeholder="Enter formal statutory rationale..." style="width: 100%; padding: 8px; border-radius: 5px; border: 1px solid #cbd5e1;" />
+            </div>
+            <button class="button primary" data-action="submit-finalization" data-inspection-id="${esc(inspectionId)}" ${guard.canFinalize ? '' : 'disabled'}>
+              Finalize &amp; Seal Record
+            </button>
+          </div>
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
+function renderTimeline(events: any[]): string {
+  if (!events.length) return '<p class="empty-inline">No chronological events logged.</p>';
+  return `
+    <div class="timeline-list">
+      ${events.map((ev) => {
+        const dotCls = ev.actor?.role === 'SYSTEM' ? 'system' : ev.actor?.role === 'INSPECTOR' ? 'inspector' : ev.eventType.includes('CONFLICT') ? 'conflict' : '';
+        return `
+          <div class="timeline-item">
+            <span class="timeline-dot ${dotCls}"></span>
+            <div class="timeline-meta">
+              <span>${fmtDate(ev.timestamp)}</span>
+              <span>·</span>
+              <strong>${esc(ev.actor?.role ?? 'SYSTEM')}: ${esc(ev.actor?.name ?? 'System Process')}</strong>
+            </div>
+            <h5 class="timeline-title">${esc(ev.title)}</h5>
+            <p class="timeline-desc">${esc(ev.description)}</p>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
 async function detailPage(id: string): Promise<void> {
-  loading('Loading inspection detail…');
+  loading('Loading compliance workspace…');
   const data = await inspectionDetail(id);
   updatedAt = new Date(); refreshError = undefined;
   const decision = data.decisions[0];
-  layout(`${pageHeader(shortId(id), 'Review-only case record. Supabase RLS determines the data returned to this browser.')}<a class="back" href="#/inspections">← Back to inspections</a><section class="case-header"><div><p class="eyebrow">${badge(data.inspection['status'])} ${badge(data.inspection['sync_status'])}</p><h2>${esc(data.product?.['name'] ?? 'Unclassified product')}</h2><p>${esc(data.product?.['category'] ?? 'No category')} · Inspector: ${esc(data.inspector?.['full_name'] ?? data.inspection['inspector_id'])}</p></div><div class="final-decision"><span>Inspector final decision</span><strong>${esc(decision?.['decision'] ?? 'Not recorded')}</strong><small>${fmtDate(decision?.['decided_at'])}</small></div></section><section class="overview-grid">${infoCard('Created', fmtDate(data.inspection['created_at']))}${infoCard('Finalized', fmtDate(data.inspection['completed_at']))}${infoCard('Source', data.inspection['source_type'])}${infoCard('Sync', data.inspection['sync_status'])}${infoCard('Product category', data.product?.['category'])}${infoCard('Last server update', fmtDate(data.inspection['updated_at']))}</section><section class="detail-grid"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Declarations</p><h2>Observed package declarations</h2></div></div>${data.declarations.length ? `<div class="table-wrap"><table><thead><tr><th>Field</th><th>Observed value</th><th>Normalized</th><th>Confidence</th><th>Verification</th></tr></thead><tbody>${data.declarations.map((row) => `<tr><td>${esc(row['field_name'])}</td><td>${esc(row['raw_value'])}</td><td><code>${json(row['normalized_value'])}</code></td><td>${typeof row['confidence'] === 'number' ? `${Math.round(Number(row['confidence']) * 100)}%` : '—'}</td><td>${badge(row['verification_status'])}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty-inline">No declarations are available.</p>'}</article><article class="panel"><p class="eyebrow">AI observation</p><h2>Provider observations</h2>${data.analyses.length ? data.analyses.map((row) => `<div class="ai-observation"><strong>${esc(row['provider'])} · ${esc(row['model'])}</strong><span>Confidence: ${typeof row['confidence'] === 'number' ? `${Math.round(Number(row['confidence']) * 100)}%` : '—'}</span><p>Analysis status: ${esc(row['status'])}. Observations are kept separate from statutory assessment and final decision.</p></div>`).join('') : '<p class="empty-inline">No AI observations are available.</p>'}</article></section><section class="panel full"><p class="eyebrow">Deterministic rule engine</p><h2>Compliance assessments</h2>${assessmentRows(data.assessments)}</section><section class="detail-grid"><article class="panel"><p class="eyebrow">Inspector reviews</p><h2>Reviews and corrections</h2>${reviewRows(data.reviews)}</article><article class="panel"><p class="eyebrow">Final decision</p><h2>Persisted decision record</h2>${decision ? `<div class="decision-card">${badge(decision['decision'])}<p>${esc(decision['comments'])}</p><small>Recorded ${fmtDate(decision['decided_at'])}</small></div>` : '<p class="empty-inline">No final decision is recorded.</p>'}</article></section>${evidenceSection(data)}${reportSection(data)}${auditSection(data.audit)} `);
+
+  const rawStatus = String(data.inspection['status'] ?? 'DRAFT');
+  const canonicalStatus = normalizeInspectionStatus(rawStatus);
+  const isFinalized = canonicalStatus === 'FINALIZED';
+  const isReopened = canonicalStatus === 'REOPENED';
+
+  const formattedAssessments = data.assessments.map((a: any) => ({
+    ruleId: String(a.id ?? ''),
+    ruleNumber: String(a.rule_number ?? a.ruleNumber ?? ''),
+    subRule: a.sub_rule ?? a.subRule,
+    ruleTitle: String(a.rule_title ?? a.ruleTitle ?? ''),
+    result: a.result,
+    severity: a.severity ?? 'MAJOR',
+    explanation: String(a.explanation ?? ''),
+    observedValue: a.observed_value ?? a.observedValue,
+    expectedConstraint: a.expected_constraint ?? a.expectedConstraint,
+    evidenceIds: a.evidence_ids ?? a.evidenceIds ?? [],
+    evaluatedAt: a.evaluated_at ?? a.evaluatedAt,
+  }));
+
+  const formattedDeclarations = data.declarations.map((d: any) => {
+    const rawType = String(d.field_name ?? d.type ?? 'DECLARATION').toUpperCase().replace(/ /g, '_');
+    return {
+      id: String(d.id ?? ''),
+      field: `declarations.${rawType}`,
+      rawText: String(d.raw_value ?? d.rawText ?? ''),
+      declaredValue: d.normalized_value ?? d.raw_value ?? d.rawText,
+      surface: (d.surface ?? d.surface_type ?? 'FRONT') as any,
+      confidence: typeof d.confidence === 'number' ? d.confidence : 0.95,
+      createdAt: d.created_at,
+    };
+  });
+
+  const formattedImages = data.images.map((img: any) => ({
+    id: String(img.id ?? ''),
+    surface: (img.surface ?? 'FRONT') as any,
+    fileUrl: String(img.storage_path ?? img.fileUrl ?? ''),
+    sha256: String(img.sha256 ?? ''),
+  }));
+
+  const workspace = buildComplianceWorkspace({
+    inspectionId: id,
+    productName: String(data.product?.['name'] ?? 'Packaged Commodity'),
+    category: String(data.product?.['category'] ?? ''),
+    status: canonicalStatus,
+    images: formattedImages,
+    declarations: formattedDeclarations,
+    assessments: formattedAssessments,
+    conflictAcknowledgements: (data.inspection['conflictAcknowledgements'] as any[]) || [],
+    decision: decision ? {
+      decision: decision['decision'],
+      comments: decision['comments'],
+      decidedAt: decision['decided_at'],
+      inspectorUserId: decision['inspector_id'],
+      isFinalized,
+    } as any : null,
+    authenticatedInspectorId: profile?.user?.['id'] ? String(profile.user['id']) : undefined,
+  });
+
+  const timelineEvents = buildInspectionTimeline({
+    inspectionId: id,
+    createdAt: String(data.inspection['created_at'] ?? ''),
+    startedAt: String(data.inspection['started_at'] ?? ''),
+    inspectorId: String(data.inspection['inspector_id'] ?? profile?.user?.id ?? ''),
+    inspectorName: String(data.inspector?.['full_name'] ?? 'Authorized Officer'),
+    images: data.images,
+    declarations: data.declarations,
+    complianceAssessments: data.assessments,
+    reviews: data.reviews,
+    decision: decision,
+    isFinalized,
+    finalizedAt: String(data.inspection['completed_at'] ?? ''),
+    reopenedAt: String(data.inspection['reopened_at'] ?? ''),
+    reopenReason: String(data.inspection['reopen_reason'] ?? ''),
+    amendments: data.amendments,
+    report: data.reports[0],
+    auditTrail: data.audit,
+  });
+
+  // Phase E: Evidence Quality Score & Completeness (Non-Statutory Deterministic Heuristic)
+  const completeness = analyzeEvidenceCompleteness({
+    images: formattedImages,
+    declarations: data.declarations as any,
+    assessments: data.assessments as any,
+    commodityCategory: data.product?.['category'] as string | undefined,
+  });
+
+  const qualityScore = calculateInspectionQualityScore({
+    completeness,
+    totalAssessmentsCount: data.assessments.length,
+    imagesCount: data.images.length,
+    reviewsCount: data.reviews.length,
+    boundingBoxesCount: data.declarations.filter((d: any) => Boolean(d.region_coordinates)).length,
+  });
+
+  const scoreMarkup = `
+    <section class="quality-score-card">
+      <div class="quality-score-header">
+        <div>
+          <p class="eyebrow">NON-STATUTORY OPERATIONAL GUIDANCE</p>
+          <h3>INSPECTION EVIDENCE QUALITY SCORE — NON-STATUTORY</h3>
+          <small>Rating: <strong>${esc(qualityScore.rating)}</strong> · Distinguishes evidence completeness from statutory applicability</small>
+        </div>
+        <div class="score-badge-huge">
+          ${qualityScore.totalScore}<small>/100</small>
+        </div>
+      </div>
+      <div class="subscores-grid">
+        <div class="subscore-item">
+          <span>Decl. Completeness (30%)</span>
+          <strong>${qualityScore.completenessPoints}/30 pts</strong>
+        </div>
+        <div class="subscore-item">
+          <span>OCR Resolution (20%)</span>
+          <strong>${qualityScore.imageQualityPoints}/20 pts</strong>
+        </div>
+        <div class="subscore-item">
+          <span>Provenance Trace (20%)</span>
+          <strong>${qualityScore.traceabilityPoints}/20 pts</strong>
+        </div>
+        <div class="subscore-item">
+          <span>Conflict Resolution (15%)</span>
+          <strong>${qualityScore.conflictResolutionPoints}/15 pts</strong>
+        </div>
+        <div class="subscore-item">
+          <span>Review Completion (15%)</span>
+          <strong>${qualityScore.reviewCompletionPoints}/15 pts</strong>
+        </div>
+      </div>
+      <p class="quality-disclaimer">${esc(qualityScore.formulaDescription)}</p>
+      <div class="completeness-grid">
+        ${completeness.items.slice(0, 8).map((item) => {
+          const cls = item.presenceStatus === 'AVAILABLE' ? 'available' : item.presenceStatus === 'MISSING_EVIDENCE' ? 'missing' : 'not-applicable';
+          return `<span class="completeness-chip ${cls}">${esc(item.category.replace(/_/g, ' '))}: ${esc(item.presenceStatus)}</span>`;
+        }).join('')}
+      </div>
+      ${completeness.smartRecommendations.length ? `
+        <div class="advisory-box" style="margin-top: 10px;">
+          <strong>Advisory Capture Recommendations (Optional):</strong>
+          ${completeness.smartRecommendations.map((r) => `<div>• ${esc(r.advisoryGuidance)}</div>`).join('')}
+        </div>
+      ` : ''}
+    </section>
+  `;
+
+  layout(`
+    ${pageHeader(shortId(id), 'Professional Compliance Workspace & Inspector Verification Command')}
+    <a class="back" href="#/inspections">← Back to inspections</a>
+    
+    ${renderFinalizedLockBanner(data.inspection, isFinalized, id)}
+    ${renderReopenedBanner(data.inspection, isReopened)}
+
+    <section class="case-header">
+      <div>
+        <p class="eyebrow">${badge(canonicalStatus)} ${badge(data.inspection['sync_status'])}</p>
+        <h2>${esc(data.product?.['name'] ?? 'Unclassified product')}</h2>
+        <p>${esc(data.product?.['category'] ?? 'No category')} · Inspector: ${esc(data.inspector?.['full_name'] ?? data.inspection['inspector_id'])}</p>
+      </div>
+      <div class="final-decision">
+        <span>Inspector final decision</span>
+        <strong>${esc(decision?.['decision'] ?? 'Not recorded')}</strong>
+        <small>${fmtDate(decision?.['decided_at'])}</small>
+      </div>
+    </section>
+
+    <section class="overview-grid">
+      ${infoCard('Created', fmtDate(data.inspection['created_at']))}
+      ${infoCard('Canonical Status', canonicalStatus)}
+      ${infoCard('Source', data.inspection['source_type'])}
+      ${infoCard('Sync State', data.inspection['sync_status'])}
+      ${infoCard('Captured Surfaces', workspace.capturedSurfaces.join(', ') || 'FRONT')}
+      ${infoCard('Last Server Update', fmtDate(data.inspection['updated_at']))}
+    </section>
+
+    ${renderActionCenter(workspace, id)}
+    ${renderConflictPanel(workspace, id)}
+    ${renderAuthoritySplit(workspace, decision, data.inspection)}
+
+    <section class="panel full">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">STATUTORY RULE-BY-RULE TRACEABILITY</p>
+          <h2>Rule-by-Rule Evidence Mapping</h2>
+        </div>
+      </div>
+      ${renderRuleMappingTable(workspace)}
+    </section>
+
+    ${renderFinalizationGuardCard(workspace, isFinalized, id)}
+    ${scoreMarkup}
+
+    <section class="detail-grid">
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Declarations</p>
+            <h2>Observed package declarations</h2>
+          </div>
+        </div>
+        ${data.declarations.length ? `
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Field</th>
+                  <th>Surface Location</th>
+                  <th>Observed value</th>
+                  <th>Confidence</th>
+                  <th>Verification</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.declarations.map((row) => `
+                  <tr>
+                    <td><strong>${esc(row['field_name'])}</strong></td>
+                    <td>${surfaceBadge(row['surface'] ?? row['surface_type'] ?? 'FRONT')}</td>
+                    <td>${esc(row['raw_value'])}</td>
+                    <td>${typeof row['confidence'] === 'number' ? `${Math.round(Number(row['confidence']) * 100)}%` : '—'}</td>
+                    <td>${badge(row['verification_status'])}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : '<p class="empty-inline">No declarations are available.</p>'}
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow">AI observation</p>
+        <h2>Provider observations</h2>
+        ${data.analyses.length ? data.analyses.map((row) => `
+          <div class="ai-observation">
+            <strong>${esc(row['provider'])} · ${esc(row['model'])}</strong>
+            <span>Confidence: ${typeof row['confidence'] === 'number' ? `${Math.round(Number(row['confidence']) * 100)}%` : '—'}</span>
+            <p>Analysis status: ${esc(row['status'])}. Observations are kept separate from statutory assessment and final decision.</p>
+          </div>
+        `).join('') : '<p class="empty-inline">No AI observations are available.</p>'}
+      </article>
+    </section>
+
+    ${evidenceSection(data)}
+
+    <section class="timeline-container">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">IMMUTABLE CHRONOLOGY</p>
+          <h2>Append-Only Inspection Timeline</h2>
+        </div>
+      </div>
+      ${renderTimeline(timelineEvents)}
+    </section>
+
+    ${reportSection(data)}
+    ${auditSection(data.audit)}
+  `);
 }
 function evidenceSection(data: InspectionDetail): string {
   const evidence: Row[] = [...data.images.map((row): Row => ({ ...row, kind: 'image' })), ...data.evidence.map((row): Row => ({ ...row, kind: 'evidence' }))];
@@ -145,10 +733,14 @@ async function genericListPage(kind: 'rules' | 'reports' | 'audit' | 'inspectors
     content = rows.length ? `<div class="evidence-grid">${rows.map((r) => `<button class="evidence-card" data-action="view-evidence" data-evidence='${esc(JSON.stringify(r))}'><span class="evidence-placeholder">▧</span><strong>${esc(r['surface'] ?? r['evidence_type'] ?? 'Evidence')}</strong><small>${shortId(r['inspection_id'])}</small><small>SHA-256: ${esc(r['sha256'] ?? 'Not recorded')}</small></button>`).join('')}</div>` : state('No evidence files found', 'Evidence available through RLS will appear here.', false);
   } else if (kind === 'analytics') {
     const [inspections, assessments] = await Promise.all([simpleList('inspections', 'started_at'), simpleList('compliance_assessments', 'evaluated_at')]);
-    const results = ['PASS', 'FAIL', 'REQUIRES_VERIFICATION', 'NOT_APPLICABLE', 'INSUFFICIENT_EVIDENCE'];
-    const max = Math.max(1, ...results.map((result) => rowCount(assessments, (r) => r['result'] === result)));
-    const topRules = Object.entries(assessments.filter((r) => r['result'] === 'FAIL').reduce<Record<string, number>>((acc, r) => { const rule = text(r['rule_number'], 'Unspecified rule'); acc[rule] = (acc[rule] ?? 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
-    content = `<section class="metric-grid compact"><article class="metric-card"><span>Inspection volume</span><strong>${inspections.length}</strong><small>Most recent 100 available records</small></article><article class="metric-card"><span>Verification rate</span><strong>${assessments.length ? Math.round((rowCount(assessments, (r) => r['result'] === 'REQUIRES_VERIFICATION') / assessments.length) * 100) : 0}%</strong><small>Assessment outcome rate; not legal compliance</small></article></section><section class="two-column"><article class="panel"><p class="eyebrow">Assessment distribution</p><h2>Rule engine outcomes</h2><div class="bar-chart">${results.map((result) => { const value = rowCount(assessments, (r) => r['result'] === result); return `<div><span>${esc(result.replaceAll('_', ' '))}</span><i><b style="width:${Math.round((value / max) * 100)}%"></b></i><strong>${value}</strong></div>`; }).join('')}</div></article><article class="panel"><p class="eyebrow">Review priority</p><h2>Top failing rules</h2>${topRules.length ? `<ol class="ranked">${topRules.map(([rule, count]) => `<li><span>${esc(rule)}</span><strong>${count} failures</strong></li>`).join('')}</ol>` : '<p class="empty-inline">No failing rule assessments are available.</p>'}</article></section>`;
+    if (!inspections.length) {
+      content = state('No inspection records available', 'Honest empty state displayed: operational analytics require persisted inspection records. LM-Vision never fabricates compliance percentages, mock charts, or fake AI accuracy figures.', false);
+    } else {
+      const results = ['PASS', 'FAIL', 'REQUIRES_VERIFICATION', 'NOT_APPLICABLE', 'INSUFFICIENT_EVIDENCE'];
+      const max = Math.max(1, ...results.map((result) => rowCount(assessments, (r) => r['result'] === result)));
+      const topRules = Object.entries(assessments.filter((r) => r['result'] === 'FAIL').reduce<Record<string, number>>((acc, r) => { const rule = text(r['rule_number'], 'Unspecified rule'); acc[rule] = (acc[rule] ?? 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
+      content = `<section class="metric-grid compact"><article class="metric-card"><span>Inspection volume</span><strong>${inspections.length}</strong><small>Most recent available database records</small></article><article class="metric-card"><span>Verification rate</span><strong>${assessments.length ? Math.round((rowCount(assessments, (r) => r['result'] === 'REQUIRES_VERIFICATION') / assessments.length) * 100) : 0}%</strong><small>Assessment outcome rate; not legal compliance</small></article></section><section class="two-column"><article class="panel"><p class="eyebrow">Assessment distribution</p><h2>Rule engine outcomes</h2><div class="bar-chart">${results.map((result) => { const value = rowCount(assessments, (r) => r['result'] === result); return `<div><span>${esc(result.replaceAll('_', ' '))}</span><i><b style="width:${Math.round((value / max) * 100)}%"></b></i><strong>${value}</strong></div>`; }).join('')}</div></article><article class="panel"><p class="eyebrow">Review priority</p><h2>Top failing rules</h2>${topRules.length ? `<ol class="ranked">${topRules.map(([rule, count]) => `<li><span>${esc(rule)}</span><strong>${count} failures</strong></li>`).join('')}</ol>` : '<p class="empty-inline">No failing rule assessments are available.</p>'}</article></section><p class="hint" style="margin-top: 14px;">Operational trends from actual persisted database records. Not a legal compliance percentage. No AI accuracy claims or fake analytics are generated.</p>`;
+    }
   } else if (kind === 'sync') {
     const [inspections, images] = await Promise.all([simpleList('inspections', 'updated_at'), simpleList('inspection_images')]);
     const counts = { synced: rowCount(inspections, (r) => r['sync_status'] === 'SYNCED'), pending: rowCount(inspections, (r) => ['LOCAL_ONLY', 'PENDING_SYNC', 'SYNCING'].includes(String(r['sync_status']))), failed: rowCount(inspections, (r) => r['sync_status'] === 'SYNC_FAILED') + rowCount(images, (r) => r['sync_status'] === 'UPLOAD_FAILED'), conflicts: rowCount(inspections, (r) => r['sync_status'] === 'SYNC_CONFLICT') };
@@ -177,6 +769,149 @@ function showEvidenceModal(): void {
   if (path) getSignedUrl(bucket, path).then((url) => { const holder = document.querySelector('#evidence-image'); if (holder && url) holder.outerHTML = `<img src="${esc(url)}" alt="Evidence preview" />`; }).catch((error: Error) => { const holder = document.querySelector('#evidence-image'); if (holder) holder.textContent = `Unable to access original evidence: ${error.message}`; });
 }
 
+async function packageComparisonPage(): Promise<void> {
+  loading('Loading package comparison workspace…');
+  const inspections = await listInspections({}, 1, 50);
+  updatedAt = new Date(); refreshError = undefined;
+
+  const hash = location.hash;
+  const queryString = hash.includes('?') ? hash.split('?')[1] : '';
+  const params = new URLSearchParams(queryString);
+  const idA = params.get('a') || inspections.rows[0]?.id;
+  const idB = params.get('b') || (inspections.rows[1]?.id ?? inspections.rows[0]?.id);
+
+  let detailA: InspectionDetail | undefined;
+  let detailB: InspectionDetail | undefined;
+
+  if (idA) {
+    try { detailA = await inspectionDetail(idA); } catch { /* ignore */ }
+  }
+  if (idB) {
+    try { detailB = idB === idA ? detailA : await inspectionDetail(idB); } catch { /* ignore */ }
+  }
+
+  const makePackageRecord = (id: string, detail?: InspectionDetail): PackageComparisonSubject | undefined => {
+    if (!detail) return undefined;
+    const decls = (detail.declarations || []) as any[];
+    return {
+      inspectionId: id,
+      productName: String(detail.product?.['name'] ?? 'Unknown Commodity'),
+      brandName: String(detail.product?.['brand'] ?? detail.product?.['category'] ?? ''),
+      category: String(detail.product?.['category'] ?? ''),
+      sku: id,
+      declarations: decls.map((d) => ({
+        id: String(d.id ?? ''),
+        type: d.field_name ?? 'OTHER',
+        rawText: String(d.raw_value ?? ''),
+        confidence: typeof d.confidence === 'number' ? d.confidence : 0.9,
+      })) as any,
+    };
+  };
+
+  const pkgA = idA ? makePackageRecord(idA, detailA) : undefined;
+  const pkgB = idB ? makePackageRecord(idB, detailB) : undefined;
+
+  let compMarkup = '';
+  if (!pkgA || !pkgB) {
+    compMarkup = state('Select two packages', 'Please select two inspection records above to evaluate comparability and observational variance.', false);
+  } else {
+    const comparison = comparePackages(pkgA, pkgB);
+    const compBadgeClass = comparison.comparability === 'COMPARABLE' ? 'good' : comparison.comparability === 'PARTIALLY_COMPARABLE' ? 'warn' : 'bad';
+
+    compMarkup = `
+      <section class="panel full">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Comparability Assessment</p>
+            <h2>Comparability Status: <span class="badge ${compBadgeClass}">${esc(comparison.comparability)}</span></h2>
+            <p class="subtitle">${esc(comparison.comparabilityRationale)}</p>
+          </div>
+        </div>
+
+        <div class="advisory-box">
+          <strong>LEGAL METROLOGY GUARDRAIL:</strong>
+          Package differences are purely observational until evaluated under statutory conditions by the Rule Engine. Differences in net quantity, price, or declarations between different packages do not constitute an automatic violation.
+        </div>
+
+        <div class="compare-grid">
+          <div class="compare-card">
+            <h3>Package A: ${esc(pkgA.productName || shortId(idA))}</h3>
+            <p><small>ID: ${esc(idA)}</small></p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Field</th><th>Observed Text</th></tr></thead>
+                <tbody>
+                  ${pkgA.declarations.map((d: any) => `<tr><td>${esc(d.type.replace(/_/g, ' '))}</td><td>${esc(d.rawText)}</td></tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="compare-card">
+            <h3>Package B: ${esc(pkgB.productName || shortId(idB))}</h3>
+            <p><small>ID: ${esc(idB)}</small></p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Field</th><th>Observed Text</th></tr></thead>
+                <tbody>
+                  ${pkgB.declarations.map((d: any) => `<tr><td>${esc(d.type.replace(/_/g, ' '))}</td><td>${esc(d.rawText)}</td></tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <h3 style="margin-top: 20px;">Observational Differences (${comparison.differences.filter((d: any) => d.hasDifference).length})</h3>
+        ${comparison.differences.filter((d: any) => d.hasDifference).length ? `
+          <div class="table-wrap" style="margin-top: 10px;">
+            <table>
+              <thead><tr><th>Field</th><th>Package A</th><th>Package B</th><th>Observational Note</th></tr></thead>
+              <tbody>
+                ${comparison.differences.filter((d: any) => d.hasDifference).map((d: any) => `
+                  <tr>
+                    <td><strong>${esc(d.fieldName)}</strong></td>
+                    <td>${esc(String(d.valueA ?? '—'))}</td>
+                    <td>${esc(String(d.valueB ?? '—'))}</td>
+                    <td>${esc(d.differenceDescription)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : '<p class="empty-inline">No observational variances detected between the two package records.</p>'}
+      </section>
+    `;
+  }
+
+  const selectorMarkup = `
+    <div class="compare-selector">
+      <div>
+        <label><strong>Select Package A:</strong></label>
+        <select id="select-pkg-a" style="width: 100%; padding: 8px; margin-top: 6px;">
+          ${inspections.rows.map((r) => `<option value="${esc(r.id)}" ${r.id === idA ? 'selected' : ''}>${esc(r.productName)} (${shortId(r.id)})</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label><strong>Select Package B:</strong></label>
+        <select id="select-pkg-b" style="width: 100%; padding: 8px; margin-top: 6px;">
+          ${inspections.rows.map((r) => `<option value="${esc(r.id)}" ${r.id === idB ? 'selected' : ''}>${esc(r.productName)} (${shortId(r.id)})</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  `;
+
+  layout(`${pageHeader('Package-to-Package Comparison Workspace', 'Validate product identity comparability and analyze observational differences across packages or batches.')}${selectorMarkup}${compMarkup}`);
+
+  document.querySelector('#select-pkg-a')?.addEventListener('change', (e) => {
+    const val = (e.target as HTMLSelectElement).value;
+    location.hash = `#/compare?a=${val}&b=${idB || ''}`;
+  });
+  document.querySelector('#select-pkg-b')?.addEventListener('change', (e) => {
+    const val = (e.target as HTMLSelectElement).value;
+    location.hash = `#/compare?a=${idA || ''}&b=${val}`;
+  });
+}
+
 async function renderRoute(): Promise<void> {
   if (!profile) return;
   const path = currentPath();
@@ -185,6 +920,7 @@ async function renderRoute(): Promise<void> {
     if (path === '/dashboard') await dashboardPage();
     else if (path === '/inspections') await inspectionsPage(activeInspectionFilters, activeInspectionPage);
     else if (path.startsWith('/inspections/')) await detailPage(path.split('/')[2] ?? '');
+    else if (path === '/compare' || path.startsWith('/compare')) await packageComparisonPage();
     else if (path === '/profile') await profilePage();
     else if (path === '/rules' || path === '/reports' || path === '/audit' || path === '/inspectors' || path === '/evidence' || path === '/analytics' || path === '/sync' || path === '/reviews') await genericListPage(path.slice(1) as Parameters<typeof genericListPage>[0]);
     else { location.hash = '#/dashboard'; }
@@ -199,6 +935,38 @@ function updateAutoRefresh(interval: number): void {
   if (autoTimer) window.clearInterval(autoTimer);
   autoTimer = interval ? window.setInterval(() => { void renderRoute(); }, interval) : undefined;
 }
+function showReopenModal(inspectionId: string): void {
+  const existing = document.querySelector('#reopen-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'reopen-modal';
+  modal.className = 'modal';
+  modal.innerHTML = `
+    <div class="modal-content reopen-modal-card">
+      <button class="modal-close" data-action="close-reopen-modal">×</button>
+      <p class="eyebrow" style="color: #ea580c;">CONTROLLED REOPENING</p>
+      <h2>Reopen Finalized Inspection</h2>
+      <p style="font-size: 13px; color: #475569; margin: 8px 0 14px; line-height: 1.5;">
+        You are reopening a sealed inspection (<strong>${shortId(inspectionId)}</strong>).
+        The previous finalization, timestamp, and decision will remain permanently preserved in the immutable audit trail.
+      </p>
+      <div class="advisory-box" style="margin-bottom: 12px;">
+        <strong>Statutory Audit Requirement:</strong> A substantive operational reason is mandatory (minimum 5 characters).
+      </div>
+      <label style="font-weight: 700; font-size: 12px; color: #334155; display: block;">
+        Official Reason for Reopening:
+        <textarea id="reopen-reason-input" placeholder="e.g. Discovered manufacturer batch conflict on bottle neck requiring physical re-examination..." rows="3"></textarea>
+      </label>
+      <div class="reopen-actions" style="margin-top: 14px;">
+        <button class="button secondary" data-action="close-reopen-modal">Cancel</button>
+        <button class="button primary" data-action="confirm-reopen" data-inspection-id="${esc(inspectionId)}">Confirm Reopen</button>
+      </div>
+    </div>
+  `;
+  document.body.append(modal);
+  bind();
+}
+
 function bind(): void {
   document.querySelectorAll<HTMLElement>('[data-route]').forEach((node) => node.addEventListener('click', () => { location.hash = node.dataset.route ?? '#/inspections'; }));
   document.querySelectorAll<HTMLButtonElement>('[data-action="refresh"]').forEach((button) => button.addEventListener('click', async () => {
@@ -228,6 +996,62 @@ function bind(): void {
   document.querySelectorAll<HTMLButtonElement>('[data-action="retry-sync"]').forEach((button) => button.addEventListener('click', () => window.alert('The dashboard does not create sync mutations. Retry from the originating mobile client; refresh here to observe the resulting shared state.')));
   document.querySelectorAll<HTMLFormElement>('[data-form="inspection-filters"]').forEach((form) => form.addEventListener('submit', (event) => { event.preventDefault(); const values = new FormData(form); const filters: InspectionFilters = {}; for (const key of ['search', 'status', 'sync', 'result', 'from', 'to'] as const) { const value = values.get(key); if (typeof value === 'string' && value) filters[key] = value; } void inspectionsPage(filters); }));
   document.querySelectorAll<HTMLButtonElement>('[data-page]').forEach((button) => button.addEventListener('click', () => void inspectionsPage(activeInspectionFilters, Number(button.dataset.page))));
+
+  // Phase F Action Handlers
+  document.querySelectorAll<HTMLButtonElement>('[data-action="open-reopen-modal"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.inspectionId;
+      if (id) showReopenModal(id);
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-action="close-reopen-modal"]').forEach((btn) => {
+    btn.addEventListener('click', () => document.querySelector('#reopen-modal')?.remove());
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-action="confirm-reopen"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.inspectionId;
+      const input = document.querySelector<HTMLTextAreaElement>('#reopen-reason-input');
+      const reason = input?.value.trim() ?? '';
+      if (reason.length < 5) {
+        window.alert('A substantive reason of at least 5 characters is required to reopen a finalized inspection.');
+        return;
+      }
+      btn.disabled = true;
+      const res = await reopenInspection(id!, reason, String(profile?.user?.['id'] ?? 'demo-inspector'), profile?.role);
+      document.querySelector('#reopen-modal')?.remove();
+      if (!res.success) {
+        window.alert(res.error || 'Failed to reopen inspection.');
+      } else {
+        window.alert('Inspection reopened successfully. Amendment record and audit event logged.');
+        void renderRoute();
+      }
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-action="acknowledge-conflict"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const inspectionId = btn.dataset.inspectionId;
+      const conflictId = btn.dataset.conflictId;
+      if (!inspectionId || !conflictId) return;
+      btn.disabled = true;
+      await acknowledgeConflictInDb(inspectionId, conflictId, String(profile?.user?.['id'] ?? 'demo-inspector'));
+      window.alert('Conflict acknowledged: "I reviewed the conflicting evidence."');
+      void renderRoute();
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-action="submit-finalization"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const inspectionId = btn.dataset.inspectionId;
+      if (!inspectionId) return;
+      const select = document.querySelector<HTMLSelectElement>('#final-decision-select');
+      const comments = document.querySelector<HTMLInputElement>('#final-decision-comments');
+      const decisionVal = select?.value || 'COMPLIANT';
+      const commentVal = comments?.value.trim() || 'Statutory review concluded.';
+      btn.disabled = true;
+      await finalizeInspectionInDb(inspectionId, decisionVal, commentVal, String(profile?.user?.['id'] ?? 'demo-inspector'));
+      window.alert('Inspection finalized. Record tamper-sealed and lock engaged.');
+      void renderRoute();
+    });
+  });
 }
 
 function renderLogin(message?: string): void {

@@ -27,7 +27,9 @@ import { ReportPreviewScreen } from '../screens/ReportPreviewScreen';
 import { RuleLibraryScreen } from '../screens/RuleLibraryScreen';
 import { LegalRuleDetailScreen } from '../screens/LegalRuleDetailScreen';
 import { EcommerceComparisonScreen } from '../screens/EcommerceComparisonScreen';
+import { PackageComparisonScreen } from '../screens/PackageComparisonScreen';
 import { getRootRoute } from './guards';
+
 import type { MainTabParamList, RootStackParamList } from './types';
 
 const Root = createNativeStackNavigator<RootStackParamList>();
@@ -87,7 +89,9 @@ export function AppNavigator(): React.JSX.Element {
               <Root.Screen name="Calibration" component={DeferredScreen} />
               <Root.Screen name="Ecommerce" component={EcommerceComparisonScreen as never} />
               <Root.Screen name="EcommerceComparison" component={EcommerceComparisonScreen} />
+              <Root.Screen name="PackageComparison" component={PackageComparisonScreen} />
             </>
+
           )}
         </Root.Navigator>
       )}

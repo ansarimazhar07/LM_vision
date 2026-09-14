@@ -1,5 +1,5 @@
 /**
- * On-Device OCR Engine (Phase 10)
+ * On-Device OCR Engine (Phase A: Real On-Device OCR Foundation)
  *
  * Extracts text regions, bounding boxes, lines, and confidence scores
  * from package surface photographs without internet or external API calls.
@@ -7,25 +7,49 @@
  * ARCHITECTURAL INVARIANTS:
  * 1. Offline-First: 100% on-device processing.
  * 2. No Fabrication: Returns only text actually detected in the input.
- * 3. Conservative Confidence: Bounded between 0.0 and 1.0; low-contrast text gets low confidence.
+ *    For real camera/gallery captures, never returns synthetic mock fixtures.
+ * 3. Honest Confidence: Never invents fake confidence scores; returns null
+ *    if the engine does not report confidence.
  * 4. Provenance Preservation: Preserves imageId and unique regionId on every TextRegion.
- * 5. Native Adaptability: Pluggable interface for Google ML Kit in native Android development builds,
- *    with a zero-crash universal on-device parser for Expo Go, Vitest, and CI.
+ * 5. Native Adaptability: Pluggable interface for bundled Google ML Kit in native Android builds,
+ *    with a zero-crash universal on-device parser for CI and non-native test environments.
  */
 
 import type { TextRegion, OCRResult, ImageInputPayload, PackageSurface } from '@lm-vision/shared-types';
 
+export type OCRExecutionStatus =
+  | 'IDLE'
+  | 'PROCESSING'
+  | 'SUCCESS'
+  | 'NO_TEXT'
+  | 'LOW_QUALITY'
+  | 'UNSUPPORTED_IMAGE'
+  | 'OCR_ERROR';
+
 /**
- * Native OCR Bridge interface for development builds
+ * Native OCR Bridge interface for on-device development and production APK builds
  */
 export interface NativeOCRBridge {
   recognizeText(imageUriOrBase64: string): Promise<{
     text: string;
+    imageWidth?: number;
+    imageHeight?: number;
+    effectiveWidth?: number;
+    effectiveHeight?: number;
+    rotationDegrees?: number;
     blocks: Array<{
       text: string;
       frame?: { x: number; y: number; width: number; height: number };
-      confidence?: number;
-      lines?: Array<{ text: string; confidence?: number }>;
+      boundingBox?: {
+        xMin: number;
+        yMin: number;
+        xMax: number;
+        yMax: number;
+        width?: number;
+        height?: number;
+      };
+      confidence?: number | null;
+      lines?: Array<{ text: string; confidence?: number | null }>;
     }>;
   }>;
 }
@@ -89,38 +113,78 @@ Country of Origin: India`,
 };
 
 /**
- * Simulates or parses text regions from an image payload
+ * Extracts on-device text regions from an image payload
  */
 export async function extractOnDeviceText(image: ImageInputPayload): Promise<OCRResult> {
   const startTime = Date.now();
   const surface: PackageSurface = image.surface || 'FRONT';
   const imageId = image.imageId || '00000000-0000-4000-8000-000000000001';
 
-  // 1. If native ML Kit bridge is registered (in development build), invoke native bridge
+  // 1. If native ML Kit bridge is registered (in Android APK / dev build), invoke native bridge
   if (nativeBridge && (image.fileUrl || image.base64Data)) {
     try {
       const nativeResult = await nativeBridge.recognizeText(image.fileUrl || image.base64Data!);
-      const regions: TextRegion[] = nativeResult.blocks.map((block, idx) => ({
-        id: `region-${surface.toLowerCase()}-${idx + 1}-${generateUUID().slice(0, 8)}`,
-        imageId,
-        surface,
-        boundingBox: {
-          xMin: block.frame ? block.frame.x / 1000 : 0.1,
-          yMin: block.frame ? block.frame.y / 1000 : 0.1 * (idx + 1),
-          xMax: block.frame ? (block.frame.x + block.frame.width) / 1000 : 0.9,
-          yMax: block.frame ? (block.frame.y + block.frame.height) / 1000 : 0.1 * (idx + 1) + 0.08,
-          width: block.frame ? block.frame.width / 1000 : 0.8,
-          height: block.frame ? block.frame.height / 1000 : 0.08,
-          unit: 'NORMALIZED',
-        },
-        text: block.text,
-        confidence: block.confidence ?? 0.9,
-        lineCount: block.lines?.length || 1,
-      }));
+      const effectiveWidth = nativeResult.effectiveWidth || nativeResult.imageWidth || 1000;
+      const effectiveHeight = nativeResult.effectiveHeight || nativeResult.imageHeight || 1000;
 
-      const avgConfidence = regions.length > 0
-        ? Number((regions.reduce((sum, r) => sum + r.confidence, 0) / regions.length).toFixed(2))
-        : 0.0;
+      const regions: TextRegion[] = nativeResult.blocks.map((block, idx) => {
+        let xMin: number;
+        let yMin: number;
+        let xMax: number;
+        let yMax: number;
+
+        if (block.boundingBox && typeof block.boundingBox.xMin === 'number') {
+          xMin = Math.max(0, Math.min(1, block.boundingBox.xMin));
+          yMin = Math.max(0, Math.min(1, block.boundingBox.yMin));
+          xMax = Math.max(0, Math.min(1, block.boundingBox.xMax));
+          yMax = Math.max(0, Math.min(1, block.boundingBox.yMax));
+        } else if (block.frame && typeof block.frame.x === 'number') {
+          xMin = Math.max(0, Math.min(1, block.frame.x / effectiveWidth));
+          yMin = Math.max(0, Math.min(1, block.frame.y / effectiveHeight));
+          xMax = Math.max(0, Math.min(1, (block.frame.x + block.frame.width) / effectiveWidth));
+          yMax = Math.max(0, Math.min(1, (block.frame.y + block.frame.height) / effectiveHeight));
+        } else {
+          xMin = 0.1;
+          yMin = 0.1 * (idx + 1);
+          xMax = 0.9;
+          yMax = 0.1 * (idx + 1) + 0.08;
+        }
+
+        const width = Number(Math.max(0, xMax - xMin).toFixed(4));
+        const height = Number(Math.max(0, yMax - yMin).toFixed(4));
+
+        const conf = block.confidence != null && typeof block.confidence === 'number' && !isNaN(block.confidence)
+          ? Number(Math.max(0, Math.min(1, block.confidence)).toFixed(2))
+          : null;
+
+        return {
+          id: `region-${surface.toLowerCase()}-${idx + 1}-${generateUUID().slice(0, 8)}`,
+          imageId,
+          surface,
+          boundingBox: {
+            xMin: Number(xMin.toFixed(4)),
+            yMin: Number(yMin.toFixed(4)),
+            xMax: Number(xMax.toFixed(4)),
+            yMax: Number(yMax.toFixed(4)),
+            width,
+            height,
+            unit: 'NORMALIZED' as const,
+          },
+          text: block.text,
+          confidence: conf,
+          lineCount: block.lines?.length || 1,
+        };
+      });
+
+      const validConfidences = regions.map(r => r.confidence).filter((c): c is number => c != null);
+      const avgConfidence = validConfidences.length > 0
+        ? Number((validConfidences.reduce((sum, c) => sum + c, 0) / validConfidences.length).toFixed(2))
+        : null;
+
+      const detectedLanguages: string[] = ['en'];
+      if (/[\u0900-\u097F]/.test(nativeResult.text)) {
+        detectedLanguages.push('hi');
+      }
 
       return {
         imageId,
@@ -128,7 +192,7 @@ export async function extractOnDeviceText(image: ImageInputPayload): Promise<OCR
         regions,
         lines: regions.map(r => r.text),
         fullText: nativeResult.text,
-        detectedLanguages: ['en'],
+        detectedLanguages,
         confidence: avgConfidence,
         latencyMs: Date.now() - startTime,
         provider: 'LOCAL_OCR',
@@ -136,11 +200,11 @@ export async function extractOnDeviceText(image: ImageInputPayload): Promise<OCR
         timestamp: new Date().toISOString(),
       };
     } catch (err: any) {
-      console.warn('[LocalOCR] Native OCR bridge failed, falling back to on-device parser:', err.message);
+      console.warn('[LocalOCR] Native OCR bridge failed:', err.message);
     }
   }
 
-  // 2. Universal On-Device Perception Parser (Runs everywhere: Expo Go, Vitest, Node, Hermes)
+  // 2. Universal On-Device Perception Parser (Runs in Vitest, CI, and local mock testing)
   const textRegions: TextRegion[] = [];
   let fullText = '';
 
@@ -165,7 +229,7 @@ export async function extractOnDeviceText(image: ImageInputPayload): Promise<OCR
       if (matchedKey) {
         textToScan = PACKAGE_FIXTURE_MAP[matchedKey]!;
       } else if (!isRealDeviceCapture) {
-        // Synthetic test fixtures default to sample package text
+        // Synthetic test fixtures default to sample package text in CI / Vitest
         textToScan = DEFAULT_SAMPLE_PACKAGE_TEXT;
       } else {
         // Real user camera photo without native ML Kit linked: zero fake text
@@ -210,9 +274,10 @@ export async function extractOnDeviceText(image: ImageInputPayload): Promise<OCR
     fullText = lines.join('\n');
   }
 
-  const overallConfidence = textRegions.length > 0
-    ? Number((textRegions.reduce((sum, r) => sum + r.confidence, 0) / textRegions.length).toFixed(2))
-    : 0.0;
+  const validConfidences = textRegions.map(r => r.confidence).filter((c): c is number => c != null);
+  const overallConfidence = validConfidences.length > 0
+    ? Number((validConfidences.reduce((sum, c) => sum + c, 0) / validConfidences.length).toFixed(2))
+    : null;
 
   const detectedLanguages: string[] = ['en'];
   if (/[\u0900-\u097F]/.test(fullText)) {

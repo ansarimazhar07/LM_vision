@@ -1,0 +1,57 @@
+[
+  {
+    "id": "atta-pkg-001",
+    "filename": "atta-package-label.jpg",
+    "productName": "Golden Mills Whole Wheat Atta",
+    "category": "COMMODITY",
+    "packagingType": "BAG",
+    "groundTruth": {
+      "brand": "GOLDEN MILLS",
+      "commodity": "WHOLE WHEAT ATTA",
+      "hindiText": "शुरुआती आटा",
+      "netQuantity": { "value": 1, "unit": "kg" },
+      "mrp": { "currency": "INR", "value": 55.00 },
+      "packagingDate": "03/2026",
+      "manufacturer": "Golden Mills Ltd, Industrial Area, Faridabad, Haryana - 121004",
+      "customerCare": "1800-111-2222",
+      "countryOfOrigin": "India"
+    }
+  },
+  {
+    "id": "shampoo-pkg-002",
+    "filename": "shampoo-bottle-label.jpg",
+    "productName": "Velvet Hair Care Anti-Dandruff Shampoo",
+    "category": "COSMETIC",
+    "packagingType": "BOTTLE",
+    "groundTruth": {
+      "brand": "VELVET HAIR CARE",
+      "commodity": "ANTI-DANDRUFF SHAMPOO",
+      "netQuantity": { "value": 200, "unit": "ml" },
+      "mrp": { "currency": "INR", "value": 185.00, "symbol": "₹" },
+      "mfgDate": "01/2026",
+      "expDate": "01/2028",
+      "batch": "VHF61A",
+      "manufacturer": "Velvet Cosmetics Ltd., 45 Chemical Zone, Vapi, Gujarat - 396195",
+      "customerCare": "1800-222-3333, info@velvethaircare.in",
+      "countryOfOrigin": "India"
+    }
+  },
+  {
+    "id": "biscuit-pkg-003",
+    "filename": "biscuit-pack-label.jpg",
+    "productName": "Crisp Bakers Butter Cookies",
+    "category": "FOOD",
+    "packagingType": "WRAPPER",
+    "groundTruth": {
+      "brand": "CRISP BAKERS",
+      "commodity": "BUTTER COOKIES",
+      "netQuantity": { "value": 100, "unit": "g" },
+      "mrp": { "currency": "INR", "value": 30.00 },
+      "packagingDate": "02/2026",
+      "batch": "CB2601",
+      "manufacturer": "Crisp Bakers India Ltd., Survey 89, Peenya, Bengaluru, Karnataka - 560058",
+      "customerCare": "080-28390000",
+      "countryOfOrigin": "India"
+    }
+  }
+]

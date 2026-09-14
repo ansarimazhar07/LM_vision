@@ -17,6 +17,11 @@ import type {
   EvidenceSufficiency,
   PerceptionDiscrepancy,
 } from '@lm-vision/shared-types';
+import {
+  generateExplainableFindings,
+  generateInspectorActionQueue,
+  analyzeEvidenceCompleteness,
+} from '@lm-vision/perception';
 import type { RootStackParamList } from '../navigation/types';
 import { useInspectionWorkflow } from '../state/InspectionWorkflowProvider';
 import { Screen } from '../components/Screen';
@@ -131,8 +136,6 @@ export function InspectorReviewScreen({ navigation }: Props): React.JSX.Element 
   }, [analysisProvider]);
 
   const currentDiscrepancy = useMemo(() => {
-    const discrepancies: PerceptionDiscrepancy[] = (draft?.aiAnalysis as any)?.hybridSummary?.discrepancies || [];
-    if (!discrepancies.length) return undefined;
     const ruleToDeclType: Record<string, string> = {
       '6': 'MRP',
       '7': 'NET_QUANTITY',
@@ -144,8 +147,98 @@ export function InspectorReviewScreen({ navigation }: Props): React.JSX.Element 
     const expectedType = currentAssessment?.ruleNumber
       ? ruleToDeclType[String(currentAssessment.ruleNumber)]
       : undefined;
+
+    // 1. Check Phase D Fused Package first
+    const phaseD = (draft?.aiAnalysis as any)?.rawResponse?.phaseD;
+    if (phaseD?.fields && expectedType) {
+      const field = phaseD.fields[expectedType];
+      if (field && field.evidenceStatus === 'CONFLICT') {
+        const local = field.sources?.find(
+          (s: any) => s.sourceType === 'LOCAL_OCR' || s.sourceType === 'LOCAL_CONSENSUS'
+        );
+        const ai = field.sources?.find(
+          (s: any) => s.sourceType === 'GEMINI' || s.sourceType === 'OPENAI'
+        );
+        return {
+          declarationType: expectedType as any,
+          reason: field.discrepancyReason || field.explanation,
+          localValue: local?.value,
+          remoteValue: ai?.value,
+          localRawText: local?.rawText,
+          remoteRawText: ai?.rawText,
+          status: 'UNRESOLVED_DISCREPANCY' as const,
+        };
+      }
+    }
+
+    // 2. Fallback to hybridSummary
+    const discrepancies: PerceptionDiscrepancy[] = (draft?.aiAnalysis as any)?.hybridSummary?.discrepancies || [];
+    if (!discrepancies.length) return undefined;
     return discrepancies.find((d) => d.declarationType === expectedType);
   }, [draft, currentAssessment]);
+
+  // Dispersed / Remote Surface State for current field
+  const currentDispersedState = useMemo(() => {
+    const rawResp = (draft?.aiAnalysis as any)?.rawResponse;
+    const crossSurface = rawResp?.crossSurface;
+    if (!crossSurface?.fields) return null;
+
+    const ruleToDeclType: Record<string, string> = {
+      '6': 'MRP',
+      '7': 'NET_QUANTITY',
+      '8': 'DATE_OF_PACKAGING',
+      '9': 'MANUFACTURER_NAME_ADDRESS',
+      '10': 'CONSUMER_CARE_DETAILS',
+      '11': 'COUNTRY_OF_ORIGIN',
+      '1': 'GENERIC_NAME',
+    };
+    const expectedType = currentAssessment?.ruleNumber
+      ? ruleToDeclType[String(currentAssessment.ruleNumber)] || String(currentAssessment.ruleNumber)
+      : undefined;
+
+    if (!expectedType) return null;
+    const fieldResult = crossSurface.fields[expectedType];
+    if (!fieldResult) return null;
+
+    return {
+      fieldResult,
+      capturedSurfaces: crossSurface.capturedSurfaces || [],
+    };
+  }, [draft, currentAssessment]);
+
+  // Phase E: Explainable Findings & Action Center Prioritized Queue
+  const explainableFindings = useMemo(() => {
+    if (!draft) return [];
+    return generateExplainableFindings({
+      inspectionId: draft.serverId || 'draft',
+      assessments,
+      fusedPackage: (draft.aiAnalysis as any)?.rawResponse?.phaseD,
+      declarations: draft.declarations as any,
+    });
+  }, [draft, assessments]);
+
+  const currentFinding = useMemo(() => {
+    return explainableFindings.find(
+      (f) => f.ruleId === currentAssessment?.ruleId || f.ruleNumber === currentAssessment?.ruleNumber
+    );
+  }, [explainableFindings, currentAssessment]);
+
+  const actionItems = useMemo(() => {
+    const fusedPackage = (draft?.aiAnalysis as any)?.rawResponse?.phaseD;
+    const completeness = analyzeEvidenceCompleteness({
+      images: draft?.images as any,
+      declarations: draft?.declarations as any,
+      assessments,
+      fusedPackage,
+    });
+    return generateInspectorActionQueue({
+      findings: explainableFindings,
+      completeness,
+      fusedPackage,
+      imageQuality: draft?.aiAnalysis?.quality,
+    });
+  }, [draft, explainableFindings, assessments]);
+
 
   const handleToggleChecklist = (field: 'evidence' | 'rule' | 'observation') => {
     if (!currentAssessment) return;
@@ -235,6 +328,18 @@ export function InspectorReviewScreen({ navigation }: Props): React.JSX.Element 
     Alert.alert('Correction Recorded', 'Inspector correction saved with immutable audit provenance.');
   };
 
+  const handleQuickConfirm = (val: string, source: string) => {
+    if (!currentAssessment) return;
+    workflow.recordCorrection({
+      assessmentId: currentAssessment.id,
+      declarationType: currentAssessment.declarationIds[0],
+      correctedValue: val,
+      reason: `Human Inspector verified and confirmed ${source} observation: ${val}.`,
+    });
+    Alert.alert('Verified by Inspector', `Confirmed ${source} observation (${val}) with immutable audit provenance.`);
+  };
+
+
   const handleCaptureMoreEvidence = () => {
     // Navigate to camera capture with intent
     navigation.navigate('CameraCapture');
@@ -301,6 +406,42 @@ export function InspectorReviewScreen({ navigation }: Props): React.JSX.Element 
               );
             })}
           </ScrollView>
+
+          {/* Phase E: Action Center Prioritization Banner */}
+          {actionItems.length > 0 && (
+            <View style={styles.actionCenterBanner}>
+              <View style={styles.actionBannerHeader}>
+                <Text style={styles.actionBannerTitle}>⚡ INSPECTOR ACTION QUEUE</Text>
+                <Badge
+                  label={`${actionItems.filter((i) => i.priority === 'P1_CRITICAL').length} CRITICAL · ${actionItems.filter((i) => i.priority === 'P2_HIGH').length} HIGH`}
+                  bg="#fee2e2"
+                  color="#b91c1c"
+                  size="sm"
+                />
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }}>
+                {actionItems.slice(0, 5).map((act) => {
+                  const isCritical = act.priority === 'P1_CRITICAL';
+                  return (
+                    <View
+                      key={act.id}
+                      style={[
+                        styles.actionPill,
+                        { borderColor: isCritical ? '#f87171' : '#fcd34d', backgroundColor: isCritical ? '#fef2f2' : '#fffbeb' },
+                      ]}
+                    >
+                      <Text style={[styles.actionPillPriority, { color: isCritical ? '#b91c1c' : '#b45309' }]}>
+                        {act.priority.replace('_', ' ')}:
+                      </Text>
+                      <Text style={styles.actionPillText} numberOfLines={1}>
+                        {act.title}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          )}
         </Surface>
 
         {/* ================================================================= */}
@@ -361,6 +502,22 @@ export function InspectorReviewScreen({ navigation }: Props): React.JSX.Element 
           </View>
 
           <Text style={styles.explanationText}>{currentAssessment?.explanation}</Text>
+
+          {/* Phase E Explainable Finding Grounding */}
+          {currentFinding && (
+            <View style={styles.findingExplainBox}>
+              <Text style={styles.findingWhyTitle}>Plain-Language Assessment Rationale:</Text>
+              <Text style={styles.findingWhyText}>{currentFinding.explanation}</Text>
+              {currentFinding.suggestedInspectorAction ? (
+                <View style={styles.findingActionRow}>
+                  <Text style={styles.findingActionLabel}>Recommended Inspector Action:</Text>
+                  <Text style={styles.findingActionText}>
+                    {currentFinding.suggestedInspectorAction}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          )}
         </Surface>
 
         {/* ================================================================= */}
@@ -405,6 +562,73 @@ export function InspectorReviewScreen({ navigation }: Props): React.JSX.Element 
               </View>
               <Text style={styles.conflictNote}>
                 Statutory requirement: Discrepancy flagged for inspector verification. Local evidence preserved without silent overwrite.
+              </Text>
+              <View style={styles.quickActionRow}>
+                {currentDiscrepancy.localValue !== undefined ? (
+                  <Pressable
+                    style={styles.quickConfirmBtn}
+                    onPress={() => handleQuickConfirm(String(currentDiscrepancy.localValue), 'Local On-Device OCR')}
+                  >
+                    <Text style={styles.quickConfirmBtnText}>Confirm Local ({String(currentDiscrepancy.localValue)})</Text>
+                  </Pressable>
+                ) : null}
+                {currentDiscrepancy.remoteValue !== undefined ? (
+                  <Pressable
+                    style={[styles.quickConfirmBtn, { backgroundColor: '#7c3aed' }]}
+                    onPress={() => handleQuickConfirm(String(currentDiscrepancy.remoteValue), 'Gemini Cloud')}
+                  >
+                    <Text style={styles.quickConfirmBtnText}>Confirm Gemini ({String(currentDiscrepancy.remoteValue)})</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable
+                  style={[styles.quickConfirmBtn, { backgroundColor: '#475569' }]}
+                  onPress={handleOpenCorrection}
+                >
+                  <Text style={styles.quickConfirmBtnText}>Custom Value</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
+
+          {/* Dispersed Multi-Surface Search State & True "Surface Not Captured" Callout */}
+          {currentDispersedState?.fieldResult.searchStatus === 'SEARCH_INCOMPLETE' ? (
+            <View style={styles.searchIncompleteCard}>
+              <View style={styles.searchIncompleteHeader}>
+                <Text style={styles.searchIncompleteBadge}>SEARCH INCOMPLETE</Text>
+              </View>
+              <Text style={styles.searchIncompleteTitle}>Not found on current images</Text>
+
+              <View style={styles.surfaceStatusSection}>
+                <Text style={styles.surfaceStatusHeading}>Captured:</Text>
+                {currentDispersedState.capturedSurfaces.map((s: string) => (
+                  <Text key={s} style={styles.surfaceCapturedItem}>✓ {s.replace(/_/g, ' ')}</Text>
+                ))}
+
+                <Text style={[styles.surfaceStatusHeading, { marginTop: 8 }]}>Not captured:</Text>
+                {currentDispersedState.fieldResult.uncapturedRelevantSurfaces.map((s: string) => (
+                  <Text key={s} style={styles.surfaceUncapturedItem}>○ {s.replace(/_/g, ' ')}</Text>
+                ))}
+              </View>
+
+              {currentDispersedState.fieldResult.recommendation ? (
+                <View style={styles.searchRecommendationBox}>
+                  <Text style={styles.searchRecommendationLabel}>Recommendation:</Text>
+                  <Text style={styles.searchRecommendationText}>{currentDispersedState.fieldResult.recommendation}</Text>
+                </View>
+              ) : null}
+            </View>
+          ) : currentDispersedState?.fieldResult.searchStatus === 'SEARCH_COMPLETED_NO_EVIDENCE' ? (
+            <View style={styles.searchCompleteNoEvidenceCard}>
+              <Text style={styles.searchCompleteNoEvidenceBadge}>SEARCH COMPLETED — NO EVIDENCE DETECTED</Text>
+              <Text style={styles.searchCompleteNoEvidenceText}>
+                {currentDispersedState.fieldResult.statusSummary}
+              </Text>
+            </View>
+          ) : currentDispersedState?.fieldResult.evidenceStatus === 'AGREEMENT' && currentDispersedState.fieldResult.sources.length >= 2 ? (
+            <View style={styles.searchAgreementCard}>
+              <Text style={styles.searchAgreementBadge}>✓ CROSS-SURFACE AGREEMENT</Text>
+              <Text style={styles.searchAgreementText}>
+                Corroborated across {Array.from(new Set(currentDispersedState.fieldResult.sources.map((s: any) => s.surface))).join(' & ')}
               </Text>
             </View>
           ) : null}
@@ -1096,4 +1320,212 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 2,
   },
+  quickActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+  },
+  quickConfirmBtn: {
+    backgroundColor: '#047857',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickConfirmBtnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  actionCenterBanner: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  actionBannerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  actionBannerTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#991b1b',
+    letterSpacing: 0.5,
+  },
+  actionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    marginRight: 6,
+    maxWidth: 240,
+  },
+  actionPillPriority: {
+    fontSize: 10,
+    fontWeight: '800',
+    marginRight: 4,
+  },
+  actionPillText: {
+    fontSize: 11,
+    color: '#1e293b',
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  findingExplainBox: {
+    marginTop: 10,
+    padding: 10,
+    backgroundColor: '#f8fafc',
+    borderRadius: 6,
+    borderLeftWidth: 3,
+    borderLeftColor: '#0284c7',
+  },
+  findingWhyTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0369a1',
+    marginBottom: 3,
+  },
+  findingWhyText: {
+    fontSize: 12,
+    color: '#334155',
+    lineHeight: 17,
+  },
+  findingActionRow: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  findingActionLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748b',
+    textTransform: 'uppercase',
+  },
+  findingActionText: {
+    fontSize: 11,
+    color: '#0f172a',
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  searchIncompleteCard: {
+    backgroundColor: '#fffbeb',
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    marginBottom: 12,
+  },
+  searchIncompleteHeader: {
+    flexDirection: 'row',
+    marginBottom: 6,
+  },
+  searchIncompleteBadge: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#b45309',
+    backgroundColor: '#fef3c7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    letterSpacing: 0.5,
+  },
+  searchIncompleteTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#92400e',
+    marginBottom: 8,
+  },
+  surfaceStatusSection: {
+    backgroundColor: '#ffffff',
+    borderRadius: 6,
+    padding: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#fef3c7',
+  },
+  surfaceStatusHeading: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#78350f',
+    marginBottom: 3,
+  },
+  surfaceCapturedItem: {
+    fontSize: 12,
+    color: '#059669',
+    fontWeight: '600',
+    marginLeft: 6,
+    lineHeight: 18,
+  },
+  surfaceUncapturedItem: {
+    fontSize: 12,
+    color: '#d97706',
+    fontWeight: '600',
+    marginLeft: 6,
+    lineHeight: 18,
+  },
+  searchRecommendationBox: {
+    backgroundColor: '#fef3c7',
+    borderRadius: 6,
+    padding: 8,
+  },
+  searchRecommendationLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#b45309',
+    textTransform: 'uppercase',
+  },
+  searchRecommendationText: {
+    fontSize: 12,
+    color: '#92400e',
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  searchCompleteNoEvidenceCard: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    marginBottom: 12,
+  },
+  searchCompleteNoEvidenceBadge: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#475569',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  searchCompleteNoEvidenceText: {
+    fontSize: 12,
+    color: '#334155',
+    lineHeight: 17,
+  },
+  searchAgreementCard: {
+    backgroundColor: '#ecfdf5',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#a7f3d0',
+    marginBottom: 12,
+  },
+  searchAgreementBadge: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#065f46',
+    letterSpacing: 0.5,
+    marginBottom: 3,
+  },
+  searchAgreementText: {
+    fontSize: 12,
+    color: '#047857',
+    fontWeight: '600',
+  },
 });
+

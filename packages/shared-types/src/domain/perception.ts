@@ -32,7 +32,7 @@ export const OCRResultSchema = z.object({
   lines: z.array(z.string()).default([]),
   fullText: z.string(),
   detectedLanguages: z.array(z.string()).default(['en']),
-  confidence: ConfidenceScoreSchema,
+  confidence: ConfidenceScoreSchema.nullable().default(null),
   latencyMs: z.number().int().nonnegative(),
   provider: z.string().default('LOCAL_OCR'),
   mode: z.enum(['OFFLINE', 'ONLINE']).default('OFFLINE'),

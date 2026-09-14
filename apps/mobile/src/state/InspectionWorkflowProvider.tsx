@@ -1,7 +1,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 import type { ReactNode } from 'react';
-import type { Declaration, Evidence, InspectorDecision, InspectorDecisionType, PackageAnalysis } from '@lm-vision/shared-types';
+import type {
+  Declaration,
+  Evidence,
+  InspectorDecision,
+  InspectorDecisionType,
+  PackageAnalysis,
+  ConflictAcknowledgement,
+  ComplianceResult,
+} from '@lm-vision/shared-types';
+import { normalizeInspectionStatus } from '@lm-vision/perception';
 import { evaluateCompliance } from '@lm-vision/rules';
 import {
   createLocalInspectionDraft,
@@ -55,7 +64,7 @@ export interface InspectionWorkflowContextValue {
   syncSnapshot: SyncSnapshot;
   syncNow: () => Promise<SyncRunResult>;
 
-  // Phase 8: Inspector Review & Finalization Workflow
+  // Phase 8 & F: Inspector Review, Conflict Acknowledgement, and Finalization Workflow
   updateAssessmentReview: (review: AssessmentReview) => void;
   recordCorrection: (input: {
     assessmentId: string;
@@ -63,12 +72,14 @@ export interface InspectionWorkflowContextValue {
     correctedValue: unknown;
     reason: string;
   }) => void;
+  acknowledgeConflict: (field: string, reason: string, evidenceIds?: string[]) => void;
   captureAdditionalEvidence: (assessmentId: string, image: LocalInspectionImage) => void;
   finalizeInspection: (input: {
     decision: InspectorDecisionType;
     notes: string;
     conflictsAcknowledged?: boolean;
   }) => Promise<SaveResult>;
+  reopenInspection: (reason: string) => Promise<SaveResult>;
   recordAmendment: (input: {
     newDecision: InspectorDecisionType;
     reason: string;
@@ -426,6 +437,8 @@ export function InspectionWorkflowProvider({ children }: { children: ReactNode }
         violationsFound: decision !== 'COMPLIANT' && decision !== 'DISMISSED',
         verifiedFindingIds: activeDraft.findings.map((f) => f.id),
         dismissedFindingIds: [],
+        conflictAcknowledgements: activeDraft.conflictAcknowledgements || [],
+        isFinalized: false,
         supervisorReviewRequired: decision === 'SEIZED' || decision === 'ESCALATED',
         decidedAt: now,
         createdAt: now,
@@ -673,6 +686,46 @@ export function InspectionWorkflowProvider({ children }: { children: ReactNode }
     []
   );
 
+  const acknowledgeConflict = useCallback(
+    (field: string, reason: string, evidenceIds?: string[]) => {
+      setActiveDraft((prev) => {
+        if (!prev) return null;
+        const now = new Date().toISOString();
+        const inspectorId = '00000000-0000-4000-8000-000000000001';
+        const ackId = `99999999-9999-4999-8999-${Math.random().toString(16).slice(2, 14).padEnd(12, '0')}`;
+
+        const ack: ConflictAcknowledgement = {
+          id: ackId,
+          inspectorUserId: inspectorId,
+          field,
+          conflictReason: reason,
+          acknowledgedEvidenceIds: evidenceIds || [],
+          acknowledgedAt: now,
+          status: 'ACKNOWLEDGED',
+        };
+
+        const auditEvent: AuditLog = {
+          id: `66666666-6666-4666-8666-${Math.random().toString(16).slice(2, 14).padEnd(12, '0')}`,
+          action: 'CONFLICT_ACKNOWLEDGED' as any,
+          targetType: 'EVIDENCE',
+          targetId: ackId,
+          actorUserId: inspectorId,
+          actorRole: 'INSPECTOR',
+          changeSummary: `Inspector formally acknowledged conflict on '${field}': "${reason}"`,
+          timestamp: now,
+        };
+
+        return {
+          ...prev,
+          conflictAcknowledgements: [...(prev.conflictAcknowledgements || []), ack],
+          auditTrail: [...(prev.auditTrail || []), auditEvent],
+          updatedAt: now,
+        };
+      });
+    },
+    []
+  );
+
   const finalizeInspection = useCallback(
     async (input: {
       decision: InspectorDecisionType;
@@ -683,7 +736,25 @@ export function InspectionWorkflowProvider({ children }: { children: ReactNode }
         return { success: false, savedRemotely: false, localId: '', error: 'No active inspection draft' };
       }
 
-      // Pre-flight check: ensure assessments have been reviewed
+      // 1. Calculate System Assessment from Rule Engine (strictly separate from inspector decision)
+      let passCount = 0;
+      let failCount = 0;
+      let verificationCount = 0;
+      (activeDraft.complianceAssessments || []).forEach((a) => {
+        if (a.result === 'PASS') passCount++;
+        else if (a.result === 'FAIL') failCount++;
+        else if (a.result === 'REQUIRES_VERIFICATION') verificationCount++;
+      });
+      const systemAssessmentResult: ComplianceResult =
+        failCount > 0
+          ? 'FAIL'
+          : verificationCount > 0
+          ? 'REQUIRES_VERIFICATION'
+          : passCount > 0
+          ? 'PASS'
+          : 'INSUFFICIENT_EVIDENCE';
+
+      // 2. Pre-flight check: ensure assessments have been reviewed
       const unreviewedAssessments = activeDraft.complianceAssessments.filter((a) => {
         const review = activeDraft.reviews?.find((r) => r.assessmentId === a.id);
         return !review || review.status === 'UNREVIEWED';
@@ -698,32 +769,42 @@ export function InspectionWorkflowProvider({ children }: { children: ReactNode }
         };
       }
 
-      // Pre-flight check: conflicting evidence acknowledgement
-      const hasConflicts = activeDraft.complianceAssessments.some(
+      // 3. Pre-flight check: conflicting evidence acknowledgement
+      const conflictingAssessments = activeDraft.complianceAssessments.filter(
         (a) => a.evidenceSufficiency === 'CONFLICTING'
       );
-      if (hasConflicts && !input.conflictsAcknowledged) {
+      const conflictingFields = conflictingAssessments.map((a) => a.ruleTitle || a.ruleNumber);
+      const acks = activeDraft.conflictAcknowledgements || [];
+      const unacknowledgedConflicts = conflictingFields.filter(
+        (f) => !acks.some((k) => k.field === f && k.status === 'ACKNOWLEDGED') && !input.conflictsAcknowledged
+      );
+
+      if (unacknowledgedConflicts.length > 0) {
         return {
           success: false,
           savedRemotely: false,
           localId: activeDraft.localId,
-          error: 'Cannot finalize: Conflicting evidence exists and must be explicitly acknowledged.',
+          error: `Cannot finalize: Unresolved conflict on '${unacknowledgedConflicts.join(', ')}' requires explicit acknowledgement.`,
         };
       }
 
       const now = new Date().toISOString();
-      const targetInspectionId = activeDraft.serverId || '11111111-1111-4111-8111-111111111111';
+      const targetInspectionId = activeDraft.serverId || activeDraft.localId || '11111111-1111-4111-8111-111111111111';
       const inspectorId = '00000000-0000-4000-8000-000000000001';
 
       const decisionEntity: InspectorDecision = {
         id: `44444444-4444-4444-8444-${Math.random().toString(16).slice(2, 14).padEnd(12, '0')}`,
         inspectionId: targetInspectionId,
         inspectorUserId: inspectorId,
+        systemAssessment: systemAssessmentResult,
         decision: input.decision,
         summaryNotes: input.notes,
         violationsFound: input.decision !== 'COMPLIANT' && input.decision !== 'DISMISSED',
         verifiedFindingIds: activeDraft.findings.map((f) => f.id),
         dismissedFindingIds: [],
+        conflictAcknowledgements: acks,
+        isFinalized: true,
+        finalizedAt: now,
         supervisorReviewRequired: input.decision === 'SEIZED' || input.decision === 'ESCALATED',
         decidedAt: now,
         createdAt: now,
@@ -737,14 +818,14 @@ export function InspectionWorkflowProvider({ children }: { children: ReactNode }
         targetId: targetInspectionId,
         actorUserId: inspectorId,
         actorRole: 'INSPECTOR',
-        newState: { decision: input.decision, notes: input.notes },
-        changeSummary: `Inspection finalized with decision ${input.decision}. Inspection locked from ordinary editing.`,
+        newState: { decision: input.decision, notes: input.notes, systemAssessment: systemAssessmentResult },
+        changeSummary: `Inspection finalized with official determination ${input.decision}. Sealed from ordinary editing.`,
         timestamp: now,
       };
 
       const updatedDraft: LocalInspectionDraft = {
         ...activeDraft,
-        status: 'DECIDED',
+        status: 'FINALIZED',
         isFinalized: true,
         finalizedAt: now,
         inspectorDecision: decisionEntity,
@@ -777,6 +858,70 @@ export function InspectionWorkflowProvider({ children }: { children: ReactNode }
 
       void syncNow();
 
+      return result;
+    },
+    [activeDraft, supabase, syncNow]
+  );
+
+  const reopenInspection = useCallback(
+    async (reason: string): Promise<SaveResult> => {
+      if (!activeDraft) {
+        return { success: false, savedRemotely: false, localId: '', error: 'No active inspection draft' };
+      }
+      const normStatus = normalizeInspectionStatus(activeDraft.status);
+      if (normStatus !== 'FINALIZED' && !activeDraft.isFinalized) {
+        return { success: false, savedRemotely: false, localId: activeDraft.localId, error: 'Cannot reopen an unfinalized inspection.' };
+      }
+      if (!reason || reason.trim().length < 5) {
+        return { success: false, savedRemotely: false, localId: activeDraft.localId, error: 'Substantive explanation (min 5 chars) is required to reopen.' };
+      }
+
+      const now = new Date().toISOString();
+      const inspectorId = '00000000-0000-4000-8000-000000000001';
+      const targetInspectionId = activeDraft.serverId || activeDraft.localId || '11111111-1111-4111-8111-111111111111';
+      const prevDecision = activeDraft.inspectorDecision?.decision || 'COMPLIANT';
+
+      const auditEvent: AuditLog = {
+        id: `66666666-6666-4666-8666-${Math.random().toString(16).slice(2, 14).padEnd(12, '0')}`,
+        action: 'INSPECTION_REOPENED' as any,
+        targetType: 'INSPECTION',
+        targetId: targetInspectionId,
+        actorUserId: inspectorId,
+        actorRole: 'SUPERVISOR',
+        changeSummary: `Controlled reopening: "${reason}". Previous final decision: ${prevDecision}.`,
+        timestamp: now,
+      };
+
+      const updatedDraft: LocalInspectionDraft = {
+        ...activeDraft,
+        status: 'REOPENED',
+        isFinalized: false,
+        reopenedAt: now,
+        reopenReason: reason,
+        previousDecision: prevDecision,
+        auditTrail: [...(activeDraft.auditTrail || []), auditEvent],
+        updatedAt: now,
+      };
+
+      setActiveDraft(updatedDraft);
+      setSaveStatus('saving');
+      const result = await inspectionStorage.saveInspection(updatedDraft, supabase);
+      setLastSaveResult(result);
+      if (result.success) {
+        setSaveStatus('saved');
+        setCompletedInspections((prev) => {
+          const index = prev.findIndex((i) => i.localId === updatedDraft.localId);
+          if (index >= 0) {
+            const next = [...prev];
+            next[index] = updatedDraft;
+            return next;
+          }
+          return [updatedDraft, ...prev];
+        });
+      } else {
+        setSaveStatus('error');
+      }
+      void syncNow();
       return result;
     },
     [activeDraft, supabase, syncNow]
@@ -927,8 +1072,10 @@ export function InspectionWorkflowProvider({ children }: { children: ReactNode }
       syncNow,
       updateAssessmentReview,
       recordCorrection,
+      acknowledgeConflict,
       captureAdditionalEvidence,
       finalizeInspection,
+      reopenInspection,
       recordAmendment,
       getProvenanceChain,
     }),
@@ -954,8 +1101,10 @@ export function InspectionWorkflowProvider({ children }: { children: ReactNode }
       clearActiveDraft,
       updateAssessmentReview,
       recordCorrection,
+      acknowledgeConflict,
       captureAdditionalEvidence,
       finalizeInspection,
+      reopenInspection,
       recordAmendment,
       getProvenanceChain,
       syncSnapshot,

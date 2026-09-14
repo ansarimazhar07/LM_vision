@@ -11,6 +11,7 @@
  */
 
 import type { ImageInputPayload, TextRegion } from '@lm-vision/shared-types';
+import type { DerivedTransformMetadata } from './perspectiveTransform.js';
 
 export type DewarpStatus =
   | 'DEWARP_SUCCESS'
@@ -123,3 +124,107 @@ export function applyBasicGeometricDewarping(
         : 'Basic cylindrical perspective rectification applied successfully. Text baseline aligned for OCR.',
   };
 }
+
+export type DeskewStatus =
+  | 'DESKEW_APPLIED'
+  | 'DESKEW_SKIPPED_BELOW_THRESHOLD'
+  | 'DESKEW_SKIPPED_EXCEEDS_THRESHOLD'
+  | 'DESKEW_UNAVAILABLE';
+
+export interface DeskewResult {
+  originalImageId: string;
+  derivedImageId: string | null;
+  status: DeskewStatus;
+  detectedSkewDegrees: number;
+  rotationDegreesApplied: number;
+  transformationApplied: boolean;
+  metadata: DerivedTransformMetadata;
+  latencyMs: number;
+  notes: string;
+}
+
+/**
+ * Applies conservative 2D planar deskew (strictly within 2.0° to 10.0°).
+ *
+ * SKEW THRESHOLD RATIONALE:
+ * - Angles < 2.0°: Skipping deskew preserves sub-pixel stroke sharpness for small fonts,
+ *   dates, and rupee signs without lossy bilinear/bicubic resampling.
+ * - Angles > 10.0°: Severe tilt indicates a 3D perspective orientation or package corner,
+ *   which MUST be handled via 4-point projective homography, NOT simple 2D line rotation.
+ */
+export function applyConservativeDeskew(
+  image: ImageInputPayload,
+  detectedSkewDegrees: number,
+  sourceWidth: number = 1000,
+  sourceHeight: number = 1000
+): DeskewResult {
+  const startTime = Date.now();
+  const originalImageId = image.imageId || '00000000-0000-4000-8000-000000000001';
+  const absSkew = Math.abs(detectedSkewDegrees);
+
+  if (absSkew < 2.0) {
+    return {
+      originalImageId,
+      derivedImageId: null,
+      status: 'DESKEW_SKIPPED_BELOW_THRESHOLD',
+      detectedSkewDegrees,
+      rotationDegreesApplied: 0,
+      transformationApplied: false,
+      metadata: {
+        sourceImageId: originalImageId,
+        sourceWidth,
+        sourceHeight,
+        derivedWidth: sourceWidth,
+        derivedHeight: sourceHeight,
+        transformType: 'NONE',
+      },
+      latencyMs: Date.now() - startTime,
+      notes: `Skew angle (${detectedSkewDegrees.toFixed(1)}°) is below 2.0° threshold. Resampling skipped to preserve stroke sharpness.`,
+    };
+  }
+
+  if (absSkew > 10.0) {
+    return {
+      originalImageId,
+      derivedImageId: null,
+      status: 'DESKEW_SKIPPED_EXCEEDS_THRESHOLD',
+      detectedSkewDegrees,
+      rotationDegreesApplied: 0,
+      transformationApplied: false,
+      metadata: {
+        sourceImageId: originalImageId,
+        sourceWidth,
+        sourceHeight,
+        derivedWidth: sourceWidth,
+        derivedHeight: sourceHeight,
+        transformType: 'NONE',
+      },
+      latencyMs: Date.now() - startTime,
+      notes: `Skew angle (${detectedSkewDegrees.toFixed(1)}°) exceeds 10.0° limit. 2D rotation rejected; requires 3D perspective rectification.`,
+    };
+  }
+
+  const derivedImageId = generateDerivedUuid('deskewed');
+  const rotationDegreesApplied = -detectedSkewDegrees; // Counter-rotate to level text baseline
+
+  return {
+    originalImageId,
+    derivedImageId,
+    status: 'DESKEW_APPLIED',
+    detectedSkewDegrees,
+    rotationDegreesApplied,
+    transformationApplied: true,
+    metadata: {
+      sourceImageId: originalImageId,
+      sourceWidth,
+      sourceHeight,
+      derivedWidth: sourceWidth,
+      derivedHeight: sourceHeight,
+      transformType: 'DESKEW',
+      rotationDegrees: rotationDegreesApplied,
+    },
+    latencyMs: Date.now() - startTime,
+    notes: `Conservative 2D deskew applied (${rotationDegreesApplied.toFixed(1)}° counter-rotation). Text baselines leveled.`,
+  };
+}
+

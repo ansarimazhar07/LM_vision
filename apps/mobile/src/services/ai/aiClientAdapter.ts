@@ -8,8 +8,12 @@ import type {
   PackageAnalysis,
   PackageAnalysisInput,
 } from '@lm-vision/shared-types';
-import { evaluateCompliance } from '@lm-vision/rules';
-import { detectPerceptionConflicts, runLocalPerceptionPipeline } from '@lm-vision/perception';
+import {
+  detectPerceptionConflicts,
+  evaluateComplianceWithEvidenceMapping,
+  fuseEvidence,
+  runLocalPerceptionPipeline,
+} from '@lm-vision/perception';
 import type { LocalInspectionImage } from '../../state/draft';
 import { runMockInspectionPipeline } from './mockPipeline';
 import { normalizeInspectionImages } from './normalization';
@@ -142,7 +146,17 @@ export class MobileAIClientAdapter implements AIProvider {
     // 0. LOCAL_ONLY VALIDATION MODE: 100% on-device perception & deterministic GSR 202(E) rules
     if (this.executionMode === 'LOCAL_ONLY' || isLocalOnlyMode()) {
       try {
-        const localAnalysis = await executeLocalPerception(images, canonicalInspectionId, options);
+        let localAnalysis = await executeLocalPerception(images, canonicalInspectionId, options);
+        const fusionResult = fuseEvidence({
+          inspectionId: canonicalInspectionId,
+          localAnalysis,
+          aiAvailable: false,
+        });
+        localAnalysis = {
+          ...fusionResult.packageAnalysis,
+          modelName: 'ondevice-ocr-cv-v1',
+          provider: 'LOCAL_OCR',
+        };
 
         options?.onProgress?.({
           stage: 'EVALUATING_RULES',
@@ -150,11 +164,12 @@ export class MobileAIClientAdapter implements AIProvider {
           progressPercent: 90,
         });
 
-        const complianceSummary = evaluateCompliance({
+        const complianceSummary = evaluateComplianceWithEvidenceMapping({
           inspectionId: canonicalInspectionId,
           packageAnalysis: localAnalysis,
           actualSalePrice: options?.onlineListedMrp,
-        });
+          images: normalizedImages,
+        }).summary;
 
         const { findings, evidence } = buildStatutoryFindingsAndEvidence(
           canonicalInspectionId,
@@ -203,7 +218,17 @@ export class MobileAIClientAdapter implements AIProvider {
     // 2. OFFLINE MODE: 100% On-Device Perception Pipeline (Phase 10)
     if (this.executionMode === 'OFFLINE') {
       try {
-        const localAnalysis = await executeLocalPerception(images, canonicalInspectionId, options);
+        let localAnalysis = await executeLocalPerception(images, canonicalInspectionId, options);
+        const fusionResult = fuseEvidence({
+          inspectionId: canonicalInspectionId,
+          localAnalysis,
+          aiAvailable: false,
+        });
+        localAnalysis = {
+          ...fusionResult.packageAnalysis,
+          modelName: 'ondevice-ocr-cv-v1',
+          provider: 'LOCAL_OCR',
+        };
 
         options?.onProgress?.({
           stage: 'EVALUATING_RULES',
@@ -211,11 +236,12 @@ export class MobileAIClientAdapter implements AIProvider {
           progressPercent: 90,
         });
 
-        const complianceSummary = evaluateCompliance({
+        const complianceSummary = evaluateComplianceWithEvidenceMapping({
           inspectionId: canonicalInspectionId,
           packageAnalysis: localAnalysis,
           actualSalePrice: options?.onlineListedMrp,
-        });
+          images: normalizedImages,
+        }).summary;
 
         const { findings, evidence } = buildStatutoryFindingsAndEvidence(
           canonicalInspectionId,
@@ -317,11 +343,12 @@ export class MobileAIClientAdapter implements AIProvider {
           localAnalysis = await executeLocalPerception(images, canonicalInspectionId, options);
         }
 
-        const complianceSummary = evaluateCompliance({
+        const complianceSummary = evaluateComplianceWithEvidenceMapping({
           inspectionId: canonicalInspectionId,
           packageAnalysis: localAnalysis,
           actualSalePrice: options?.onlineListedMrp,
-        });
+          images: normalizedImages,
+        }).summary;
 
         const { findings, evidence } = buildStatutoryFindingsAndEvidence(
           canonicalInspectionId,
@@ -350,24 +377,39 @@ export class MobileAIClientAdapter implements AIProvider {
       // Both succeeded: Cross-compare and detect conflicts
       options?.onProgress?.({
         stage: 'DETECTING_CONFLICTS',
-        label: 'Detecting perception discrepancies between on-device OCR and Gemini...',
+        label: 'Reconciling multi-source evidence and resolving perception discrepancies...',
         progressPercent: 85,
       });
 
-      const hybridSummary = detectPerceptionConflicts(localAnalysis!, remoteAnalysis);
-      const hybridAnalysis: PackageAnalysis = {
-        ...localAnalysis!,
-        provider: 'HYBRID',
-        modelName: 'hybrid-ocr-gemini',
-        declarations: hybridSummary.resolvedDeclarations,
-        timestamp: new Date().toISOString(),
-      };
+      const fusionResult = fuseEvidence({
+        inspectionId: canonicalInspectionId,
+        localAnalysis: localAnalysis!,
+        remoteAnalysis,
+        aiAvailable: true,
+        ecommerceListing: options?.onlineListedMrp
+          ? {
+              id: 'ecom-ref',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              capturedAt: new Date().toISOString(),
+              platformName: 'E-Commerce Catalog',
+              productUrl: 'https://catalog.local',
+              productTitle: 'Catalog Reference Listing',
+              listedPriceInr: options.onlineListedMrp,
+              listedMrpInr: options.onlineListedMrp,
+            }
+          : undefined,
 
-      const complianceSummary = evaluateCompliance({
+      });
+      const hybridAnalysis = fusionResult.packageAnalysis;
+      const hybridSummary = detectPerceptionConflicts(localAnalysis!, remoteAnalysis);
+
+      const complianceSummary = evaluateComplianceWithEvidenceMapping({
         inspectionId: canonicalInspectionId,
         packageAnalysis: hybridAnalysis,
         actualSalePrice: options?.onlineListedMrp,
-      });
+        images: normalizedImages,
+      }).summary;
 
       const { findings, evidence } = buildStatutoryFindingsAndEvidence(
         canonicalInspectionId,
@@ -420,11 +462,11 @@ export class MobileAIClientAdapter implements AIProvider {
 
       options?.onProgress?.({
         stage: 'EXTRACTING_DECLARATIONS',
-        label: 'Sending evidence to LM-Vision Gemini Multimodal Vision engine...',
+        label: 'Requesting cloud AI package analysis...',
         progressPercent: 40,
       });
 
-      // Secure Backend API Call (Client -> Backend -> Gemini)
+      // Secure Backend API Call (Client -> Backend Router: Gemini -> Grok -> Cloud Unavailable)
       const requestPayload: PackageAnalysisInput = {
         inspectionId: canonicalInspectionId,
         images: preparedImages,
@@ -441,8 +483,8 @@ export class MobileAIClientAdapter implements AIProvider {
 
       this.assertNetworkAllowed('REAL package-analysis fetch');
       try {
-        console.log(`[MobileAIClient] Calling AI Engine at: ${this.backendUrl}/api/v1/ai/package-analysis?provider=GEMINI`);
-        const response = await fetch(`${this.backendUrl}/api/v1/ai/package-analysis?provider=GEMINI`, {
+        console.log(`[MobileAIClient] Calling AI Engine Router at: ${this.backendUrl}/api/v1/ai/package-analysis`);
+        const response = await fetch(`${this.backendUrl}/api/v1/ai/package-analysis`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -452,22 +494,27 @@ export class MobileAIClientAdapter implements AIProvider {
 
         if (!response.ok) {
           const errText = await response.text().catch(() => '');
-          console.warn(`[MobileAIClient] Gemini backend call failed (HTTP ${response.status}):`, errText);
+          console.warn(`[MobileAIClient] Cloud AI router call failed (HTTP ${response.status}):`, errText);
           throw new Error(`Server responded with HTTP ${response.status}: ${errText}`);
         }
 
         const responseJson = await response.json();
         analysis = responseJson.data;
+        options?.onProgress?.({
+          stage: 'EXTRACTING_DECLARATIONS',
+          label: 'Cloud AI available. Processing declarations...',
+          progressPercent: 60,
+        });
       } catch (networkErr: any) {
-        console.warn('[MobileAIClient] Backend AI Engine unavailable:', networkErr?.message || networkErr);
+        console.warn('[MobileAIClient] Cloud AI unavailable, switching to local analysis:', networkErr?.message || networkErr);
 
-        // Tier 2: Resilient local on-device perception fallback
-        const fallbackReason = 'Gemini backend unavailable. Continuing with on-device analysis.';
+        // Terminal fallback: Resilient local on-device perception
+        const fallbackReason = 'Cloud AI unavailable — continuing with offline analysis.';
         options?.onFallback?.(fallbackReason);
 
         options?.onProgress?.({
           stage: 'EXTRACTING_OCR',
-          label: `${fallbackReason} Running on-device OCR...`,
+          label: fallbackReason,
           progressPercent: 50,
         });
 
@@ -475,10 +522,32 @@ export class MobileAIClientAdapter implements AIProvider {
         usedFallback = true;
       }
 
-      // Safety guard — analysis is always assigned by one of the 3 tiers above
+      // Safety guard — analysis is always assigned by one of the tiers above
       if (!analysis) {
         throw new Error('All analysis tiers failed to produce a result.');
       }
+
+      // Fuse multi-source evidence
+      const fusionResult = fuseEvidence({
+        inspectionId: canonicalInspectionId,
+        localAnalysis: usedFallback ? analysis : undefined,
+        remoteAnalysis: usedFallback ? undefined : analysis,
+        aiAvailable: !usedFallback,
+        ecommerceListing: options?.onlineListedMrp
+          ? {
+              id: 'ecom-ref',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              capturedAt: new Date().toISOString(),
+              platformName: 'E-Commerce Catalog',
+              productUrl: 'https://catalog.local',
+              productTitle: 'Catalog Reference Listing',
+              listedPriceInr: options.onlineListedMrp,
+              listedMrpInr: options.onlineListedMrp,
+            }
+          : undefined,
+      });
+      analysis = fusionResult.packageAnalysis;
 
       options?.onProgress?.({
         stage: 'EVALUATING_RULES',
@@ -486,11 +555,12 @@ export class MobileAIClientAdapter implements AIProvider {
         progressPercent: 85,
       });
 
-      const complianceSummary = evaluateCompliance({
+      const complianceSummary = evaluateComplianceWithEvidenceMapping({
         inspectionId: canonicalInspectionId,
         packageAnalysis: analysis,
         actualSalePrice: options?.onlineListedMrp,
-      });
+        images: normalizedImages,
+      }).summary;
 
       const { findings, evidence } = buildStatutoryFindingsAndEvidence(
         canonicalInspectionId,
@@ -501,8 +571,8 @@ export class MobileAIClientAdapter implements AIProvider {
       options?.onProgress?.({
         stage: 'COMPLETED',
         label: usedFallback
-          ? 'Local perception analysis complete. Statutory rules evaluated.'
-          : `Gemini Multimodal Analysis complete (${analysis.modelName}). Statutory rules evaluated.`,
+          ? 'On-device analysis complete (offline). Statutory rules evaluated.'
+          : 'Cloud AI enrichment complete. Statutory rules evaluated.',
         progressPercent: 100,
       });
 
@@ -514,8 +584,12 @@ export class MobileAIClientAdapter implements AIProvider {
         evidence,
         complianceAssessments: complianceSummary.assessments,
         complianceSummary,
-        fallbackNotice: usedFallback ? 'Gemini unavailable. Continuing with local analysis.' : undefined,
+        analysisMode: usedFallback ? 'LOCAL_ONLY' : 'CLOUD_AI',
+        cloudAIStatus: usedFallback ? 'UNAVAILABLE' : 'AVAILABLE',
+        cloudProvidersAttempted: ['GEMINI', 'GROK'],
+        fallbackNotice: usedFallback ? 'Cloud AI unavailable — continuing with offline analysis.' : undefined,
       };
+
     } catch (err: any) {
       const errorMessage = err?.message || 'Inspection pipeline failed.';
 

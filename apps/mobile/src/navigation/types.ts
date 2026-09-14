@@ -17,6 +17,7 @@ export type RootStackParamList = {
   ReviewSummary: undefined;
   Ecommerce: undefined;
   EcommerceComparison: undefined;
+  PackageComparison: undefined;
   Report: { inspectionId?: string } | undefined;
   InspectionDetail: { inspectionId: string };
   ReportPreview: { inspectionId: string };

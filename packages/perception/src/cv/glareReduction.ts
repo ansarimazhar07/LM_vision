@@ -10,6 +10,7 @@
  */
 
 import type { ImageInputPayload, ImageQuality } from '@lm-vision/shared-types';
+import type { GlareRegion, GlareSeverity } from './imageQualityEngine.js';
 
 export type GlareStatus =
   | 'GLARE_REDUCED'
@@ -23,10 +24,14 @@ export interface GlareReductionResult {
   algorithmName: 'SPECULAR_LUMINANCE_NORMALIZATION';
   algorithmVersion: string;
   glareCoveragePercent: number; // 0.0 to 100.0
+  glareRatio?: number; // 0.0 to 1.0
+  glareRegions?: GlareRegion[];
+  severity?: GlareSeverity;
   contrastEnhanced: boolean;
   latencyMs: number;
   notes: string;
 }
+
 
 function generateDerivedUuid(prefix: string = 'glare-reduced'): string {
   return `${prefix}-xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`.replace(/[xy]/g, (c) => {

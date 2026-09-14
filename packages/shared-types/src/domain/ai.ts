@@ -24,9 +24,13 @@ export const TextRegionSchema = z.object({
   boundingBox: BoundingBoxSchema,
   polygon: PolygonSchema.optional(),
   text: z.string(),
-  confidence: ConfidenceScoreSchema,
+  confidence: ConfidenceScoreSchema.nullable().default(null),
   lineCount: z.number().int().positive().optional(),
   estimatedFontHeightMm: z.number().nonnegative().optional(),
+  // Multi-Surface Provenance (backward-compatible, optional)
+  surfaceType: PackageSurfaceSchema.optional(),
+  surfaceId: z.string().optional(),
+  captureId: z.string().optional(),
 });
 export type TextRegion = z.infer<typeof TextRegionSchema>;
 
@@ -42,6 +46,13 @@ export const DeclarationSchema = z.object({
   region: TextRegionSchema.optional(),
   isFormatStandard: z.boolean().optional(),
   detectedLanguage: z.string().default('en'),
+  // Multi-Surface Provenance (backward-compatible, optional)
+  surface: PackageSurfaceSchema.optional(),
+  surfaceType: PackageSurfaceSchema.optional(),
+  surfaceId: z.string().optional(),
+  captureId: z.string().optional(),
+  evidenceStatus: z.string().optional(),
+  sources: z.array(z.any()).optional(),
 });
 export type Declaration = z.infer<typeof DeclarationSchema>;
 

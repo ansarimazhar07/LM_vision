@@ -29,10 +29,8 @@ react {
     // codegenDir = file("../../node_modules/@react-native/codegen")
 
     /* Variants */
-    //   The list of variants to that are debuggable. For those we're going to
-    //   skip the bundling of the JS bundle and the assets. By default is just 'debug'.
-    //   If you add flavors like lite, prod, etc. you'll have to list your debuggableVariants.
-    // debuggableVariants = ["liteDebug", "prodDebug"]
+    // Setting debuggableVariants to empty ensures JS bundle and assets are packaged into app-debug.apk for standalone offline device use
+    debuggableVariants = []
 
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
@@ -179,4 +177,9 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // Google ML Kit On-Device Text Recognition (Bundled standalone models - 100% offline)
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'
+    implementation 'androidx.exifinterface:exifinterface:1.3.7'
 }

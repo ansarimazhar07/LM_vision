@@ -12,35 +12,60 @@ import {
 } from '@lm-vision/shared-types';
 import { MockAIProvider } from './providers/mock-provider.js';
 import { GeminiProvider, type GeminiProviderOptions } from './providers/gemini-provider.js';
+import { GrokProvider, type GrokProviderOptions } from './providers/grokProvider.js';
+import { ProviderRouter, type ProviderRouterOptions } from './providers/providerRouter.js';
+import { ProviderError } from './providers/providerErrors.js';
+import type { CanonicalAIObservationResult } from './providers/providerTypes.js';
 
 export interface AIEngineGatewayOptions {
   defaultProvider?: AIProviderName;
   geminiOptions?: GeminiProviderOptions;
+  grokOptions?: GrokProviderOptions;
+  routerOptions?: ProviderRouterOptions;
   autoRegisterDefaults?: boolean;
 }
 
 /**
- * AI Gateway Registry & Dispatcher
+ * AI Gateway Registry & Failover Dispatcher
  */
 export class AIEngineGateway {
   private readonly providers = new Map<AIProviderName, AIProvider>();
   private defaultProvider: AIProviderName;
+  private router: ProviderRouter;
+  private readonly routerOptions?: ProviderRouterOptions;
 
   constructor(options?: AIEngineGatewayOptions) {
     this.defaultProvider = options?.defaultProvider ?? 'MOCK';
+    this.routerOptions = options?.routerOptions instanceof ProviderRouter ? undefined : options?.routerOptions;
 
-    if (options?.autoRegisterDefaults) {
-      this.registerProvider(new MockAIProvider());
-      try {
-        this.registerProvider(new GeminiProvider(options.geminiOptions));
-      } catch {
-        // Safe registration if env keys absent
-      }
-    }
+    const gemini = new GeminiProvider(options?.geminiOptions);
+    const grok = new GrokProvider(options?.grokOptions);
+
+    this.providers.set('MOCK', new MockAIProvider());
+    this.providers.set('GEMINI', gemini);
+    this.providers.set('GROK', grok);
+
+    this.router =
+      options?.routerOptions instanceof ProviderRouter
+        ? options.routerOptions
+        : new ProviderRouter({
+            ...options?.routerOptions,
+            geminiProvider: gemini,
+            grokProvider: grok,
+            geminiOptions: options?.geminiOptions,
+            grokOptions: options?.grokOptions,
+          });
   }
 
   public registerProvider(provider: AIProvider): void {
     this.providers.set(provider.name, provider);
+    if (provider.name === 'GEMINI' || provider.name === 'GROK') {
+      this.router = new ProviderRouter({
+        ...this.routerOptions,
+        geminiProvider: this.providers.get('GEMINI'),
+        grokProvider: this.providers.get('GROK'),
+      });
+    }
   }
 
   public getProvider(name?: AIProviderName): AIProvider {
@@ -76,6 +101,37 @@ export class AIEngineGateway {
     return this.defaultProvider;
   }
 
+  public getRouter(): ProviderRouter {
+    return this.router;
+  }
+
+  /**
+   * Routes package analysis through the 3-tier failover router:
+   * GEMINI -> xAI GROK -> CLOUD_AI_UNAVAILABLE
+   */
+  public async routePackageAnalysis(
+    input: PackageAnalysisInput,
+    preferredProvider?: AIProviderName
+  ): Promise<CanonicalAIObservationResult> {
+    if (preferredProvider === 'MOCK' || (!preferredProvider && this.defaultProvider === 'MOCK')) {
+      const mockProvider = this.getProvider('MOCK');
+      const start = Date.now();
+      const analysis = await mockProvider.analyzePackage(input);
+      return {
+        provider: 'MOCK',
+        model: 'mock-vision-engine-v1',
+        status: 'CLOUD_AI_SUCCESS',
+        observations: analysis.declarations,
+        latencyMs: Date.now() - start,
+        requestId: 'mock-request-id',
+        generatedAt: new Date().toISOString(),
+        packageAnalysis: analysis,
+      };
+    }
+
+    return this.router.routePackageAnalysis(input, preferredProvider);
+  }
+
   /**
    * Execute package analysis using specified or default provider
    */
@@ -83,8 +139,25 @@ export class AIEngineGateway {
     input: PackageAnalysisInput,
     preferredProvider?: AIProviderName
   ): Promise<PackageAnalysis> {
-    const provider = this.getProvider(preferredProvider);
-    return provider.analyzePackage(input);
+    // If explicitly calling MOCK, bypass router
+    if (preferredProvider === 'MOCK' || (!preferredProvider && this.defaultProvider === 'MOCK')) {
+      const provider = this.getProvider(preferredProvider);
+      return provider.analyzePackage(input);
+    }
+
+    const routerResult = await this.router.routePackageAnalysis(input, preferredProvider);
+
+    if (routerResult.status === 'CLOUD_AI_SUCCESS' && routerResult.packageAnalysis) {
+      return routerResult.packageAnalysis;
+    }
+
+    throw new ProviderError({
+      provider: routerResult.fallbackFrom || 'GEMINI',
+      category: 'PROVIDER_UNAVAILABLE',
+      message: routerResult.error || 'All cloud AI providers failed or timed out.',
+      httpStatus: 503,
+      isRetryable: false,
+    });
   }
 
   /**
@@ -120,11 +193,12 @@ export class AIEngineGateway {
 
 /**
  * Creates a fully configured production AI Engine Gateway
- * with MockAIProvider and GeminiProvider pre-registered.
+ * with MockAIProvider, GeminiProvider, and GrokProvider pre-registered.
  */
 export function createProductionGateway(options?: {
   defaultProvider?: AIProviderName;
   geminiOptions?: GeminiProviderOptions;
+  grokOptions?: GrokProviderOptions;
 }): AIEngineGateway {
   const defaultProvider =
     options?.defaultProvider ??
@@ -134,9 +208,11 @@ export function createProductionGateway(options?: {
         'GEMINI'
       : 'GEMINI');
 
-  const gateway = new AIEngineGateway({ defaultProvider });
-  gateway.registerProvider(new MockAIProvider());
-  gateway.registerProvider(new GeminiProvider(options?.geminiOptions));
+  const gateway = new AIEngineGateway({
+    defaultProvider,
+    geminiOptions: options?.geminiOptions,
+    grokOptions: options?.grokOptions,
+  });
 
   return gateway;
 }
