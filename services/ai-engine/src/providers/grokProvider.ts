@@ -183,13 +183,18 @@ export class GrokProvider implements AIProvider {
     }
 
     const lower = model.toLowerCase();
+    const isTextOnly = lower.includes('text') || lower.includes('embed');
     // Verify that configured model is an image-capable variant
+    // Modern Grok models (grok-4.20, grok-4.6, grok-4.5, grok-4.3, grok-build) natively support multimodal image inputs
     const isVisionCapable =
-      lower.includes('vision') ||
-      lower.includes('image') ||
-      lower.includes('multimodal') ||
-      lower.includes('grok-2-vision') ||
-      lower.includes('grok-vision');
+      !isTextOnly &&
+      (lower.includes('vision') ||
+        lower.includes('image') ||
+        lower.includes('multimodal') ||
+        lower.includes('grok-4') ||
+        lower.includes('grok-2') ||
+        lower.includes('grok-code') ||
+        lower.includes('grok-build'));
 
     if (!isVisionCapable) {
       throw new AppError({
@@ -351,6 +356,14 @@ export class GrokProvider implements AIProvider {
               httpStatus: status,
               isRetryable: status !== 503,
             });
+          }
+
+          if (status === 400 && errBody.toLowerCase().includes('model not found')) {
+            if (payload.model !== 'grok-4.20-non-reasoning') {
+              console.warn(`[xAI Grok Provider] Model '${payload.model}' not found on xAI. Retrying with active multimodal model 'grok-4.20-non-reasoning'...`);
+              payload.model = 'grok-4.20-non-reasoning';
+              continue;
+            }
           }
 
           throw new ProviderError({

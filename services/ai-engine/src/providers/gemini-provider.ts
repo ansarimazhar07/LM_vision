@@ -86,13 +86,13 @@ export class GeminiProvider implements AIProvider {
     }
 
     let model = configuredModel.trim();
-    if (model === 'gemini-3.5-flash' || model === 'gemini-3-flash') {
-      console.warn(`[GeminiProvider] '${model}' is not an official Google Gemini model. Normalizing to 'gemini-1.5-flash'.`);
-      model = 'gemini-1.5-flash';
+    if (model === 'gemini-1.5-flash') {
+      console.warn(`[GeminiProvider] '${model}' is retired or deprecated on Google API v1beta. Upgrading to 'gemini-3.6-flash'.`);
+      model = 'gemini-3.6-flash';
     }
 
     this.modelName = model;
-    this.defaultModel = this.modelName;
+    this.defaultModel = 'gemini-2.5-flash';
 
     const envTimeout =
       typeof process !== 'undefined' && process.env?.['GEMINI_TIMEOUT_MS']
@@ -395,8 +395,34 @@ export class GeminiProvider implements AIProvider {
       response = await Promise.race([callPromise, timeoutPromise]);
       console.log(`[GeminiProvider] Google Gemini responded in ${Date.now() - callStart}ms!`);
     } catch (apiErr: any) {
-      console.error(`[GeminiProvider] Google Gemini call failed after ${Date.now() - callStart}ms:`, apiErr?.message || apiErr);
-      throw apiErr;
+      const errMsg = String(apiErr?.message || apiErr);
+      if (
+        (errMsg.includes('not found') || errMsg.includes('no longer available') || errMsg.includes('404')) &&
+        this.modelName !== 'gemini-3.6-flash' &&
+        this.client?.models
+      ) {
+        console.warn(`[GeminiProvider] Model '${this.modelName}' returned 404/not available. Retrying with active model 'gemini-3.6-flash'...`);
+        try {
+          const fallbackPromise = this.client.models.generateContent({
+            model: 'gemini-3.6-flash',
+            contents,
+            config: {
+              systemInstruction: GEMINI_PACKAGE_ANALYSIS_SYSTEM_INSTRUCTION,
+              responseMimeType: 'application/json',
+              responseJsonSchema: GEMINI_STRUCTURED_RESPONSE_JSON_SCHEMA,
+              temperature: 0.1,
+            },
+          });
+          response = await Promise.race([fallbackPromise, timeoutPromise]);
+          console.log(`[GeminiProvider] Google Gemini fallback (gemini-3.6-flash) succeeded in ${Date.now() - callStart}ms!`);
+        } catch (fallbackErr) {
+          console.error(`[GeminiProvider] Google Gemini fallback also failed:`, fallbackErr);
+          throw apiErr;
+        }
+      } else {
+        console.error(`[GeminiProvider] Google Gemini call failed after ${Date.now() - callStart}ms:`, apiErr?.message || apiErr);
+        throw apiErr;
+      }
     }
     const responseText = response.text;
 
