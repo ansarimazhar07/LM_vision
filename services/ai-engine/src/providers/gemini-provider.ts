@@ -72,24 +72,20 @@ export class GeminiProvider implements AIProvider {
   private readonly cache = new Map<string, CacheEntry>();
 
   constructor(options?: GeminiProviderOptions) {
-    const envKeys: string[] = [];
+    const candidateKeys: string[] = [];
+    if (options?.apiKey) candidateKeys.push(options.apiKey.trim());
+    if (options?.apiKeys) candidateKeys.push(...options.apiKeys.map((k) => k.trim()));
     if (typeof process !== 'undefined') {
+      if (process.env?.['GEMINI_API_KEY']) candidateKeys.push(process.env['GEMINI_API_KEY'].trim());
+      if (process.env?.['GEMINI_API_KEY_1']) candidateKeys.push(process.env['GEMINI_API_KEY_1'].trim());
+      if (process.env?.['GEMINI_API_KEY_2']) candidateKeys.push(process.env['GEMINI_API_KEY_2'].trim());
+      if (process.env?.['GEMINI_API_KEY_3']) candidateKeys.push(process.env['GEMINI_API_KEY_3'].trim());
       if (process.env?.['GEMINI_API_KEYS']) {
-        envKeys.push(...process.env['GEMINI_API_KEYS'].split(',').map((k) => k.trim()));
+        candidateKeys.push(...process.env['GEMINI_API_KEYS'].split(',').map((k) => k.trim()));
       }
-      if (process.env?.['GEMINI_API_KEY_1']) envKeys.push(process.env['GEMINI_API_KEY_1'].trim());
-      if (process.env?.['GEMINI_API_KEY_2']) envKeys.push(process.env['GEMINI_API_KEY_2'].trim());
-      if (process.env?.['GEMINI_API_KEY_3']) envKeys.push(process.env['GEMINI_API_KEY_3'].trim());
-      if (process.env?.['GEMINI_API_KEY']) envKeys.push(process.env['GEMINI_API_KEY'].trim());
     }
 
-    if (options?.apiKeys && options.apiKeys.length > 0) {
-      envKeys.unshift(...options.apiKeys.map((k) => k.trim()));
-    } else if (options?.apiKey) {
-      envKeys.unshift(options.apiKey.trim());
-    }
-
-    this.apiKeys = Array.from(new Set(envKeys.filter((k) => k.length > 0 && !k.includes('placeholder'))));
+    this.apiKeys = Array.from(new Set(candidateKeys.filter((k) => k.length > 0 && !k.includes('placeholder'))));
     this.apiKey = this.apiKeys[0] || options?.apiKey;
 
     const configuredModel =
@@ -675,45 +671,65 @@ export class GeminiProvider implements AIProvider {
    */
   private async executeWithRetry<T>(fn: () => Promise<T>): Promise<T> {
     let lastError: unknown;
+    const attemptedKeyIndices = new Set<number>([this.activeKeyIndex]);
+    const maxAttempts = Math.max(this.maxRetries, this.apiKeys.length);
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
       try {
         return await fn();
       } catch (err: any) {
         lastError = err;
+        const errMsg = String(err?.message || err || '');
 
-        // If it's already an AppError with non-retryable status (e.g. 400, 401, 403, 404, 422), rethrow immediately
+        // If it's already an AppError with non-retryable status (e.g. 400, 404, 422), rethrow immediately
         if (
           err instanceof AppError &&
           (err.statusCode === 400 ||
-            err.statusCode === 401 ||
-            err.statusCode === 403 ||
             err.statusCode === 404 ||
             err.statusCode === 422)
         ) {
           throw err;
         }
 
-        const isNonRetryableStatus =
-          err?.status === 400 ||
+        const isAuthError =
           err?.status === 401 ||
-          err?.status === 403 ||
-          err?.status === 404 ||
-          err?.statusCode === 400 ||
           err?.statusCode === 401 ||
-          err?.statusCode === 403;
-        if (isNonRetryableStatus) {
-          break;
-        }
+          err?.status === 'UNAUTHENTICATED' ||
+          errMsg.includes('401') ||
+          errMsg.includes('UNAUTHENTICATED') ||
+          errMsg.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
+          errMsg.includes('invalid authentication credentials');
 
         const isRateLimit =
           err?.status === 429 ||
-          err?.message?.includes('429') ||
-          err?.message?.includes('RESOURCE_EXHAUSTED');
+          errMsg.includes('429') ||
+          errMsg.includes('RESOURCE_EXHAUSTED');
 
-        if (isRateLimit && this.rotateApiKey()) {
-          console.warn(`[GeminiProvider] Rate limit hit. Rotated to alternate Gemini API key and retrying...`);
-          continue;
+        // Rotate key on Rate Limit (429) or Auth Failure (401) if multiple keys are configured
+        if ((isRateLimit || isAuthError) && this.apiKeys.length > 1) {
+          let rotated = false;
+          for (let k = 0; k < this.apiKeys.length; k++) {
+            this.rotateApiKey();
+            if (!attemptedKeyIndices.has(this.activeKeyIndex)) {
+              attemptedKeyIndices.add(this.activeKeyIndex);
+              rotated = true;
+              console.warn(
+                `[GeminiProvider] Key index ${this.activeKeyIndex} attempted after ${isAuthError ? 'Auth Error (401)' : 'Rate Limit (429)'}. Retrying request...`
+              );
+              break;
+            }
+          }
+          if (rotated) {
+            continue;
+          }
+        }
+
+        const isNonRetryableStatus =
+          err?.status === 400 ||
+          err?.status === 404 ||
+          err?.statusCode === 400;
+        if (isNonRetryableStatus) {
+          break;
         }
 
         // Requirement 10 & 29: 503 / high demand must trigger IMMEDIATE failover without retries
@@ -722,9 +738,9 @@ export class GeminiProvider implements AIProvider {
           err?.statusCode === 503 ||
           err?.code === 503 ||
           err?.status === 'UNAVAILABLE' ||
-          err?.message?.includes('high demand') ||
-          err?.message?.includes('UNAVAILABLE') ||
-          err?.message?.includes('503');
+          errMsg.includes('high demand') ||
+          errMsg.includes('UNAVAILABLE') ||
+          errMsg.includes('503');
 
         if (isHighDemandOrUnavailable) {
           break;
@@ -771,7 +787,14 @@ export class GeminiProvider implements AIProvider {
       });
     }
 
-    if ((lastError as any)?.status === 401 || (lastError as any)?.status === 403) {
+    if (
+      (lastError as any)?.status === 401 ||
+      (lastError as any)?.status === 403 ||
+      (lastError as any)?.statusCode === 401 ||
+      cleanMessage.includes('UNAUTHENTICATED') ||
+      cleanMessage.includes('invalid authentication credentials') ||
+      cleanMessage.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED')
+    ) {
       throw new AppError({
         code: 'AUTHENTICATION_ERROR',
         message: 'Gemini authentication failed. Please check server GEMINI_API_KEY configuration.',

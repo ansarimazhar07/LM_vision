@@ -38,9 +38,9 @@ export class AIEngineGateway {
     this.defaultProvider = options?.defaultProvider ?? 'MOCK';
     this.routerOptions = options?.routerOptions instanceof ProviderRouter ? undefined : options?.routerOptions;
 
-    const geminiTimeout = Number(process.env['GEMINI_TIMEOUT_MS'] || 7000);
+    const geminiTimeout = Number(process.env['GEMINI_TIMEOUT_MS'] || 25000);
     const grokTimeout = Number(process.env['GROK_TIMEOUT_MS'] || 7000);
-    const safeGeminiTimeout = isNaN(geminiTimeout) || geminiTimeout <= 0 ? 7000 : Math.min(geminiTimeout, 10000);
+    const safeGeminiTimeout = isNaN(geminiTimeout) || geminiTimeout <= 0 ? 25000 : geminiTimeout;
     const safeGrokTimeout = isNaN(grokTimeout) || grokTimeout <= 0 ? 7000 : grokTimeout;
 
     const gemini = new GeminiProvider({
